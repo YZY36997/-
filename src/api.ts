@@ -47,7 +47,9 @@ export const chapterApi = {
   continueText: (data: any) => api.post('/api/ai-chapter/continue-chapter', data).then(r => r.data),
   batch: (data: any) => api.post('/api/ai-chapter/batch-generate', data).then(r => r.data),
   genOutline: (data: any) => api.post('/api/ai-chapter/generate-outline', data).then(r => r.data),
-  genCharacter: (data: any) => api.post('/api/ai-chapter/generate-character', data).then(r => r.data)
+  genCharacter: (data: any) => api.post('/api/ai-chapter/generate-character', data).then(r => r.data),
+  analyze: (project_id: string, text: string) => api.post('/api/ai-chapter/analyze', { project_id, text }).then(r => r.data),
+  buildSystemPrompt: (data: any) => api.post('/api/ai-chapter/build-system-prompt', data).then(r => r.data)
 }
 
 // ---------- Characters ----------
@@ -140,17 +142,14 @@ export const analysisApi = {
 
 // ---------- Rules Engine (规则引擎) ----------
 export const rulesApi = {
-  genres: () => api.get('/api/rules/genres').then(r => r.data),
-  genre: (genre: string) => api.get(`/api/rules/genre/${genre}`).then(r => r.data),
-  list: (project_id?: string) => {
-    const q = project_id ? '?project_id=' + project_id : ''
-    return api.get('/api/rules' + q).then(r => r.data)
-  },
-  create: (data: any) => api.post('/api/rules', data).then(r => r.data),
-  update: (id: string, data: any) => api.put(`/api/rules/${id}`, data).then(r => r.data),
-  remove: (id: string) => api.delete(`/api/rules/${id}`).then(r => r.data),
-  toggle: (enabled: boolean) => api.post('/api/rules/toggle', { enabled }).then(r => r.data),
-  validate: (project_id: string, content: string) => api.post('/api/rules/validate', { project_id, content }).then(r => r.data)
+  meta: () => api.get('/api/rules/meta').then(r => r.data),
+  list: () => api.get('/api/rules').then(r => r.data),
+  create: (data: any) => api.post('/api/rules/custom', data).then(r => r.data),
+  update: (id: string, data: any) => api.put(`/api/rules/custom/${id}`, data).then(r => r.data),
+  remove: (id: string) => api.delete(`/api/rules/custom/${id}`).then(r => r.data),
+  toggle: (enabled: boolean) => api.put('/api/rules/toggle', { enabled }).then(r => r.data),
+  bind: (project_id: string, data: any) => api.put(`/api/rules/project/${project_id}/bind`, data).then(r => r.data),
+  validate: (text: string, project_id?: string, extra_genre?: string) => api.post('/api/rules/validate', { text, project_id, extra_genre }).then(r => r.data)
 }
 
 // ---------- Prompts (提示词仓库) ----------

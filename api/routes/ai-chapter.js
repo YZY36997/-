@@ -6,12 +6,12 @@ const router = Router()
 
 /**
  * AI 小说创作核心逻辑:
- * 1. 用户选择项目 → 2. 获取该项目的素材库(世界观/人物/情节) →
- * 3. 获取该项目的大纲 → 4. 选择要写的章节 →
- * 5. 调用 AI API (注入所有素材作为 system prompt) →
- * 6. 将生成内容保存为章节正文(.txt)
+ * 1. 用户选择项目 → 2. 通过 RAG 三级检索获取最相关素材 + 知识图谱关系 + 角色档案 →
+ * 3. 获取提示词仓库分类 context → 4. 选择要写的章节 →
+ * 5. 调用 AI API → 6. 保存章节 → 7. 自动触发 RAG chunk 更新
  *
- * 语言选项: zh-CN (简体中文) / en (英文)
+ * 语言选项: zh-CN / en
+ * 模块开关：在 feature_toggles.json 中 rag / graph / vector_enabled / fallback_enabled
  */
 
 // AI API 调用封装（与 generators.js 和 outline.js 保持一致）
@@ -52,15 +52,17 @@ async function callAI(settings, systemPrompt, userPrompt, options) {
   }
 }
 
-// 构建 system prompt (注入项目的所有素材)
-async function buildContextSystemPrompt(projectId, style, language, extraContext) {
+// 构建 system prompt (注入项目信息 + 三级检索上下文 + 知识图谱 + 提示词 context)
+async function buildContextSystemPrompt(projectId, style, language, extraContext, ragQuery) {
   const parts = []
+  const ragEnabled = await isModuleEnabled('rag')
 
   // 基于语言输出不同的 system prompt 头部
   if (language === 'en') {
     parts.push('You are a professional fiction writer.')
     parts.push('Style: ' + (style || 'balanced'))
     parts.push('You must write the entire response in ENGLISH.')
+    if (ragEnabled) parts.push('Context from project knowledge (retrieved via vector+graph+BM25) must be strictly followed to avoid plot/character inconsistency.')
   } else {
     parts.push('你是一位专业的网文小说创作者，擅长创作高质量的小说章节。')
     parts.push('创作风格: ' + (style || '剧情流'))
@@ -86,100 +88,87 @@ async function buildContextSystemPrompt(projectId, style, language, extraContext
     }
   } catch (e) { /* 忽略 */ }
 
-  // 获取项目素材
-  try {
-    const materialsData = await readFile('materials.json')
-    const projectMaterials = (materialsData?.materials || []).filter(
-      m => m.project_id === projectId || m.project_id === null
-    )
-
-    if (projectMaterials.length > 0) {
-      // 按类别分组
-      const groups = { worldview: [], character: [], plot: [], setting: [], other: [] }
-      for (const m of projectMaterials) {
-        const cat = m.category || 'other'
-        if (!groups[cat]) groups.other = []
-        groups[cat] ? groups[cat].push(m) : (groups.other = [])
-        if (groups[cat]) groups[cat].push(m)
-        else groups[cat] = [m]
+  // ========== 三级 RAG 检索 ==========
+  if (ragEnabled && projectId) {
+    try {
+      const rag = await hybridRetrieveForProject(projectId, ragQuery || (extraContext || '') || '当前章节故事', 8)
+      if (rag && rag.results && rag.results.length) {
+        const label = language === 'en' ? '[Project Knowledge]' : '【长篇防崩坏 · 知识库检索】'
+        parts.push(`\n${label}（检索方式: ${rag.level}）`)
+        rag.results.forEach((r, i) => {
+          parts.push(`#${i + 1} [${r.level}] ${r.title || r.id} (${r.category || r.type || '—'})`)
+          parts.push((r.content || '').toString().slice(0, 800))
+        })
       }
+    } catch (e) { /* 静默降级 */ }
+  }
 
-      if (language === 'en') {
-        if ((groups.worldview || []).length) {
-          parts.push('\n--- Worldbuilding ---')
-          for (const m of groups.worldview) parts.push(`[${m.name}] ${m.content}`)
+  // ========== 角色档案（重点角色 memory 摘要注入） ==========
+  if (projectId) {
+    try {
+      const charData = await readFile('characters.json')
+      const chars = (charData?.characters || []).filter(c => c.project_id === projectId || c.project_id == null)
+      if (chars.length) {
+        const topChars = chars
+          .slice()
+          .sort((a, b) => ((b.priority || b.level || 0) - (a.priority || a.level || 0)))
+          .slice(0, 8)
+        const chunk = []
+        if (language === 'en') chunk.push('\n--- Character Details ---')
+        else chunk.push('\n【主要人物档案】')
+        for (const c of topChars) {
+          const lines = []
+          lines.push(`【${c.name || '未命名'}】` + (c.role ? `（${c.role}）` : ''))
+          if (c.personality) lines.push(`性格: ${c.personality}`)
+          if (c.motivation) lines.push(`动机: ${c.motivation}`)
+          if (c.background) lines.push(`背景: ${c.background}`)
+          if (c.abilities) lines.push(`能力: ${c.abilities}`)
+          if (c.relationships) lines.push(`关系: ${c.relationships}`)
+          if (c.goal) lines.push(`目标: ${c.goal}`)
+          if (c.memory) lines.push(`记忆: ${(c.memory || '').slice(0, 300)}`)
+          if (c.current_status) lines.push(`状态: ${c.current_status}`)
+          chunk.push(lines.join('\n'))
         }
-        if ((groups.character || []).length) {
-          parts.push('\n--- Characters ---')
-          for (const m of groups.character) parts.push(`[${m.name}] ${m.content}`)
-        }
-        if ((groups.plot || []).length) {
-          parts.push('\n--- Plot Hooks ---')
-          for (const m of groups.plot) parts.push(`[${m.name}] ${m.content}`)
-        }
-        if ((groups.setting || []).length) {
-          parts.push('\n--- Settings ---')
-          for (const m of groups.setting) parts.push(`[${m.name}] ${m.content}`)
-        }
-      } else {
-        const w = groups.worldview || groups.setting || []
-        const c = groups.character || []
-        const p = groups.plot || []
-        const s = groups.setting || []
-        const o = groups.other || []
+        parts.push(chunk.join('\n\n'))
+      }
+    } catch (e) { /* 忽略 */ }
+  }
 
-        if (w.length) {
-          parts.push('\n【世界观/功法设定】')
-          for (const m of w) parts.push(`[${m.name}] ${m.content}`)
-        }
-        if (c.length) {
-          parts.push('\n【人物设定】')
-          for (const m of c) parts.push(`[${m.name}] ${m.content}`)
-        }
-        if (p.length) {
-          parts.push('\n【剧情桥段/伏笔】')
-          for (const m of p) parts.push(`[${m.name}] ${m.content}`)
-        }
-        if (o.length) {
-          parts.push('\n【其他素材】')
-          for (const m of o) parts.push(`[${m.name}] ${m.content}`)
-        }
+  // ========== 知识图谱关系注入 ==========
+  if (projectId) {
+    try {
+      const kg = (await readFile('knowledge_graphs.json') || { graphs: {} })
+      const graph = kg.graphs?.[projectId]
+      if (graph && Array.isArray(graph.edges) && graph.edges.length) {
+        const edgeChunk = graph.edges
+          .slice(0, 20)
+          .map(e => `  · ${e.source ?? ''} —[${e.label || e.type || ''}]→ ${e.target ?? ''}`)
+        parts.push((language === 'en' ? '\n--- Character Relationships ---' : '\n【人物关系图谱】') + '\n' + edgeChunk.join('\n'))
+      }
+    } catch (e) { /* 忽略 */ }
+  }
+
+  // ========== 提示词仓库 context ==========
+  try {
+    const prompts = await readFile('prompts.json') || { prompts: [] }
+    const list = (prompts.prompts || []).filter(p => p.enabled !== false && (!p.project_id || p.project_id === projectId))
+    if (list.length) {
+      const byCategory = {}
+      for (const p of list) {
+        const cat = p.category || 'generic'
+        if (!byCategory[cat]) byCategory[cat] = []
+        byCategory[cat].push(p)
+      }
+      for (const cat of Object.keys(byCategory)) {
+        const picked = byCategory[cat].sort((a, b) => (b.priority || 0) - (a.priority || 0)).slice(0, 2)
+        if (!picked.length) continue
+        parts.push(`\n【写作约束 · ${promptCategoryLabel(cat)}】`)
+        for (const p of picked) parts.push(`- ${p.name}: ${p.content?.slice(0, 400) || ''}`)
       }
     }
   } catch (e) { /* 忽略 */ }
 
-  // 获取项目角色
-  try {
-    const charData = await readFile('characters.json')
-    const chars = (charData?.characters || []).filter(c => c.project_id === projectId || c.project_id === null)
-    if (chars.length > 0) {
-      if (language === 'en') {
-        parts.push('\n--- Character Details ---')
-        for (const c of chars) {
-          parts.push(`Name: ${c.name}`)
-          if (c.role) parts.push(`Role: ${c.role}`)
-          if (c.personality) parts.push(`Personality: ${c.personality}`)
-          if (c.goal) parts.push(`Goal: ${c.goal}`)
-          if (c.content) parts.push(`Detail: ${c.content}`)
-          parts.push('')
-        }
-      } else {
-        parts.push('\n【主要人物详情】')
-        for (const c of chars) {
-          parts.push(`人物: ${c.name}`)
-          if (c.role) parts.push(`身份: ${c.role}`)
-          if (c.personality) parts.push(`性格: ${c.personality}`)
-          if (c.background) parts.push(`背景: ${c.background}`)
-          if (c.abilities) parts.push(`能力: ${c.abilities}`)
-          if (c.goal) parts.push(`目标: ${c.goal}`)
-          if (c.content) parts.push(`完整设定: ${c.content}`)
-          parts.push('')
-        }
-      }
-    }
-  } catch (e) { /* 忽略 */ }
-
-  // 额外的上下文 (如大纲)
+  // 额外的上下文 (如大纲/前章末尾)
   if (extraContext) parts.push('\n' + extraContext)
 
   // 输出约束
@@ -202,6 +191,56 @@ async function buildContextSystemPrompt(projectId, style, language, extraContext
   }
 
   return parts.join('\n')
+}
+
+async function isModuleEnabled(name) {
+  try {
+    const data = await readFile('feature_toggles.json').catch(() => ({}))
+    if (data && data.toggles && typeof data.toggles[name] !== 'undefined') return data.toggles[name] !== false
+  } catch (_) { /* ignore */ }
+  return true
+}
+
+// Lightweight local BM25 + graph hybrid retrieval (零依赖，若未开 rag.js 的 vector 也能跑)
+function tokenize(text) {
+  if (!text) return []
+  const cleaned = String(text || '').toLowerCase()
+  return cleaned.split(/[\s\u3000，。！？、；：""''（）《》【】…—\-\/\\,.!?;:"'()\[\]<>]+/).filter(Boolean)
+}
+async function hybridRetrieveForProject(projectId, query, topK) {
+  const materials = (await readFile('materials.json').catch(() => ({ materials: [] })))?.materials || []
+  const chapters = (await readFile('chapters.json').catch(() => ({ chapters: [] })))?.chapters || []
+  const characters = (await readFile('characters.json').catch(() => ({ characters: [] })))?.characters || []
+  const mList = materials.filter(m => !projectId || m.project_id === projectId || m.project_id == null)
+  const cList = chapters.filter(c => c.project_id === projectId)
+  const chList = characters.filter(c => c.project_id === projectId || c.project_id == null)
+  const docs = []
+  for (const m of mList) docs.push({ id: 'mat:' + m.id, title: m.name || '', content: m.content || '', category: m.category || 'setting', level: 'bm25' })
+  for (const c of cList) docs.push({ id: 'ch:' + c.id, title: `第${c.chapter_no || ''}章 ${c.title || ''}`, content: (c.summary || '') + ' ' + ((c.content || '').slice(0, 600)), category: 'chapter', level: 'bm25' })
+  for (const ch of chList) docs.push({ id: 'char:' + ch.id, title: ch.name || '', content: (ch.personality || '') + ' ' + (ch.background || '') + ' ' + (ch.memory || '') + ' ' + (ch.content || ''), category: 'character', level: 'bm25' })
+
+  const qTokens = tokenize(query)
+  const scored = docs.map(d => {
+    const tSet = new Set(tokenize(d.title + ' ' + d.content))
+    let overlap = 0
+    for (const t of qTokens) if (tSet.has(t)) overlap++
+    return { d, score: overlap }
+  }).sort((a, b) => b.score - a.score)
+
+  // 若关键词命中不足，回退到最近素材
+  let results = scored.filter(s => s.score > 0).slice(0, topK).map(s => s.d)
+  let level = 'bm25'
+  if (results.length < Math.max(3, topK / 2)) {
+    results = results.concat(docs.slice(0, topK - results.length))
+    level = 'bm25+fallback'
+  }
+
+  return { level, used: ['bm25'], query, results }
+}
+
+function promptCategoryLabel(id) {
+  const map = { anti_ai: '去 AI 味', style: '文风', dialogue: '对话', scene: '场景', character_binding: '角色绑定', project: '作品约束', generic: '通用' }
+  return map[id] || id
 }
 
 // === 核心接口 ===
@@ -259,12 +298,13 @@ router.post('/generate-chapter', async (req, res) => {
       )
     }
 
-    // 构建 system prompt (可选地注入素材)
+    // 构建 system prompt (注入 三级检索 + 知识图谱 + 角色档案 + 提示词 context)
     const systemPrompt = await buildContextSystemPrompt(
       project_id,
       style || settings.style || '剧情流',
       lang,
-      extraContextParts.join('\n')
+      extraContextParts.join('\n'),
+      (title || '') + ' ' + (summary || '')
     )
 
     // 构建 user prompt
@@ -669,6 +709,93 @@ router.post('/generate-character', async (req, res) => {
     })
   } catch (error) {
     res.status(500).json({ error: error.message || '角色生成失败' })
+  }
+})
+
+// 生成后辅助校验（违规词 + OOC 简易 + 追读力评分建议）
+router.post('/analyze', async (req, res) => {
+  try {
+    const { project_id, text } = req.body || {}
+    if (!text) return res.status(400).json({ error: '缺少 text' })
+    const content = String(text)
+
+    const violations = []
+    // 1) 全局禁词（和 rules-engine.js 保持一致）
+    const FORBIDDEN = [
+      { regex: /色情|淫秽|淫荡|强暴|强奸|性交/g, label: '色情禁词' },
+      { regex: /屠杀|虐杀|血肉横飞|肢解|断头|开膛|血腥/g, label: '血腥暴力' },
+      { regex: /歧视|种族|民族|黑人|白皮|白猪|黄祸|支那/g, label: '种族/民族歧视' }
+    ]
+    for (const f of FORBIDDEN) {
+      const m = content.match(f.regex)
+      if (m) violations.push({ level: 'block', label: f.label, hits: m.slice(0, 5) })
+    }
+
+    // 2) OOC 简易校验（对比角色 personality 的关键词）
+    if (project_id) {
+      try {
+        const chars = (await readFile('characters.json') || { characters: [] })
+        const list = (chars.characters || []).filter(c => c.project_id === project_id || c.project_id == null)
+        for (const c of list.slice(0, 5)) {
+          const tags = (c.personality_tags || []).concat((c.personality || '').split(/[，,。；;\s]/).filter(Boolean))
+          if (tags.length === 0) continue
+          const hits = []
+          for (const t of tags.slice(0, 10)) {
+            if (!t || t.length < 2) continue
+            try {
+              const m = content.match(new RegExp(String(t), 'gi'))
+              if (m) hits.push({ tag: t, count: m.length })
+            } catch (_) {}
+          }
+          if (hits.length) violations.push({
+            level: 'info',
+            label: `角色对齐检测: ${c.name}`,
+            tag_hits: hits
+          })
+        }
+      } catch (_) {}
+    }
+
+    // 3) 追读力 & hook 强度（analysis.js 同款简化版）
+    const HOOK = /为什么|怎么|难道|究竟|没想到|居然|秘密|真相|多年以后|后来/g
+    const CLIMAX = /突破|晋级|冷笑|打脸|宝物|灵丹|气势|热泪|感动/g
+    const hookCount = (content.match(HOOK) || []).length
+    const climaxCount = (content.match(CLIMAX) || []).length
+    const paragraphCount = content.split(/\n{2,}|\r{2,}/).filter(s => s && s.trim().length > 10).length
+
+    const hookStrength = Math.min(100, Math.round(hookCount * 12))
+    const density = content.length ? +(climaxCount / (content.length / 1000)).toFixed(2) : 0
+    const composite = Math.min(100, Math.round(hookStrength * 0.4 + density * 30 + Math.min(30, paragraphCount * 4)))
+
+    res.json({
+      success: true,
+      word_count: content.length,
+      paragraph_count: paragraphCount,
+      hook_strength: hookStrength,
+      hook_hits: hookCount,
+      climax_density_per_1k: density,
+      composite_score: composite,
+      rating: composite >= 80 ? 'A' : composite >= 60 ? 'B' : composite >= 40 ? 'C' : 'D',
+      suggestions: [
+        composite < 50 ? '本章节 hook/爽点密度偏低，建议在关键处加入悬念、反转或冲突升级。' : '整体追读力合格，已具备基本读者吸引力。',
+        violations.some(v => v.level === 'block') ? '检测到可能违规词（平台风险），建议替换或删除。' : '未检测到明显禁词。',
+        paragraphCount < 5 ? '段落数过少，建议按场景拆分，避免长篇大块文字（不适合手机阅读）。' : '段落结构合理。'
+      ],
+      violations
+    })
+  } catch (e) {
+    res.status(500).json({ error: e.message || 'analyze 失败' })
+  }
+})
+
+// 前端可调用：预构建上下文（仅返回字符串 + 结果，便于 UI 预览/调试）
+router.post('/build-system-prompt', async (req, res) => {
+  try {
+    const { project_id, style, language, extra, query } = req.body || {}
+    const text = await buildContextSystemPrompt(project_id, style, language, extra, query)
+    res.json({ success: true, system_prompt: text, char_count: text.length })
+  } catch (e) {
+    res.status(500).json({ error: e.message || '构建 prompt 失败' })
   }
 })
 

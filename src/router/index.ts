@@ -32,6 +32,16 @@ const router = createRouter({
       path: '/settings',
       name: 'settings',
       component: () => import('../views/SettingsPage.vue')
+    },
+    {
+      path: '/setting-hub/:projectId?',
+      name: 'setting-hub',
+      component: () => import('../views/SettingHub.vue')
+    },
+    {
+      path: '/relation-graph/:projectId?',
+      name: 'relation-graph',
+      component: () => import('../views/RelationGraph.vue')
     }
   ]
 })

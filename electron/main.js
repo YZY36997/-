@@ -99,6 +99,13 @@ function startServer() {
     res.status(201).json(newProject);
   });
 
+  server.get('/api/projects/:id', (req, res) => {
+    const data = readJSON(path.join(DATA_DIR, 'projects.json'), { projects: [] });
+    const project = (data.projects || []).find(p => p.id === req.params.id);
+    if (!project) return res.status(404).json({ error: 'Not Found' });
+    res.json(project);
+  });
+
   server.put('/api/projects/:id', (req, res) => {
     const data = readJSON(path.join(DATA_DIR, 'projects.json'), { projects: [] });
     const idx = (data.projects || []).findIndex(p => p.id === req.params.id);

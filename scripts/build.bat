@@ -1,6 +1,6 @@
 @echo off
 chcp 65001 >nul
-title 灵墨小说工坊 - 构建前端
+title 灵墨小说工坊 - 前端构建
 echo ============================================
 echo   灵墨小说工坊 - 前端构建
 echo ============================================
@@ -9,36 +9,26 @@ echo.
 cd /d "%~dp0"
 cd ..
 
-where node >nul 2>nul
-if errorlevel 1 (
-    echo [错误] 未检测到 Node.js，请先安装 Node.js 16+
-    pause
-    exit /b 1
-)
-
-if not exist node_modules (
-    echo [1/3] 首次运行，安装依赖...
-    call npm install --legacy-peer-deps
-    if errorlevel 1 (
-        echo   [错误] 依赖安装失败
-        pause
-        exit /b 1
-    )
-)
-
+echo [1/3] 依赖检查...
+node scripts\ensure-deps.cjs
 echo.
-echo [2/3] 清理旧构建产物...
+
+echo [2/3] 清理旧构建...
 if exist dist (
-    echo   删除 dist 目录...
+    echo   删除 dist\
     rmdir /s /q dist
 )
-
+if exist release (
+    echo   删除 release\
+    rmdir /s /q release
+)
 echo.
+
 echo [3/3] 执行 Vite 构建...
 call npx vite build
 if errorlevel 1 (
     echo.
-    echo [错误] 前端构建失败
+    echo   [错误] 前端构建失败，请查看上方错误信息
     pause
     exit /b 1
 )
@@ -48,7 +38,7 @@ echo ============================================
 echo   ✓ 构建完成！输出目录: dist\
 echo ============================================
 echo.
-echo 可选下一步:
-echo   scripts\pack.bat      打包为 Windows EXE
+echo  可选下一步:
+echo    scripts\pack.bat    打包为 Windows EXE
 echo.
 pause

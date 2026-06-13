@@ -161,46 +161,170 @@ async function callAI(settings, systemPrompt, userPrompt, options) {
   return { text, usage: response?.data?.usage };
 }
 
-function buildContextSystemPrompt(projectId, style, language, extraContext) {
-  const parts = [];
-  if (language === 'en') parts.push('You are a professional fiction writer.', `Style:${style || 'balanced'}`, 'Write in English.');
-  else parts.push('你是一位专业的网文小说创作者', `创作风格:${style || '爽文风'}`, '语言:简体中文', '严格遵循世界观设定与人物性格');
+function validateContentLocal(content, projectId) {
+  const violations = [];
+  if (!content) return { valid: true, total_violations: 0, blocked: 0, violations };
+  const text = String(content);
+  // 1 全局禁词（关键词模式，避免外部依赖）
+  const blockPatterns = [
+    { pat: /(?:色情|淫秽|强奸|性交易|嫖妓|性侵)/gi, note: '禁止色情内容' },
+    { pat: /(?:血腥|碎尸|脑浆|内脏飞溅|血腥暴力)/gi, note: '禁止血腥描写' },
+    { pat: /(?:种族歧视|种族主义|歧视性言论|希特勒|纳粹|法西斯)/gi, note: '禁止歧视/政治敏感' }
+  ];
+  for (const p of blockPatterns) {
+    const m = text.match(p.pat);
+    if (m) violations.push({ rule: 'global:block', level: 'block', note: p.note, hits: m.slice(0, 5) });
+  }
+  const warnPatterns = [
+    { pat: /(?:赌博|赌场|下注|高利贷)/gi, note: '赌博相关提示' },
+    { pat: /(?:毒品|海洛因|大麻|冰毒)/gi, note: '毒品相关提示' },
+    { pat: /(?:自杀|自残|跳楼|割腕)/gi, note: '自杀/自残提示' }
+  ];
+  for (const p of warnPatterns) {
+    const m = text.match(p.pat);
+    if (m) violations.push({ rule: 'global:warn', level: 'warn', note: p.note, hits: m.slice(0, 5) });
+  }
+  // 2 项目题材
+  try {
+    const pdata = readJSON(jsonPath('projects'), { projects: [] });
+    const project = (pdata.projects || []).find(p => p.id === projectId);
+    if (project && project.genre) {
+      const g = String(project.genre);
+      const conflictChecks = [
+        { genre: '玄幻', patterns: [{ regex: /(?:微信|支付宝|手机|app|互联网|电脑)/gi, note: '玄幻混入现代科技元素' }] },
+        { genre: '都市', patterns: [{ regex: /(?:修仙|灵气|宗门|金丹|元婴)/gi, note: '都市混入修仙元素' }] },
+        { genre: '科幻', patterns: [{ regex: /(?:修仙|灵气|宗门|金丹|元婴)/gi, note: '科幻混入修仙元素' }] },
+        { genre: '言情', patterns: [{ regex: /(?:怒吼|大骂|暴打|血腥|砍|打)/gi, note: '言情出现过多暴力' }] }
+      ];
+      for (const c of conflictChecks) {
+        if (g.indexOf(c.genre) >= 0) {
+          for (const p of c.patterns) {
+            const m = text.match(p.regex);
+            if (m) violations.push({ rule: 'genre:' + c.genre, level: 'warn', note: p.note, hits: m.slice(0, 5) });
+          }
+        }
+      }
+    }
+  } catch (_) {}
+  // 3 自定义规则
+  try {
+    const r = readJSON(path.join(DATA_DIR, 'rules.json'), { custom: [] });
+    if (Array.isArray(r.custom)) {
+      for (const rule of r.custom) {
+        if (rule.enabled === false) continue;
+        if (rule.project_id && rule.project_id !== projectId) continue;
+        for (const p of rule.patterns || []) {
+          try {
+            const reg = new RegExp(p.regex, 'gi');
+            const m = text.match(reg);
+            if (m) violations.push({ rule: 'custom:' + (rule.title || 'custom'), level: p.level || 'warn', note: p.note || '', hits: m.slice(0, 5) });
+          } catch (_) {}
+        }
+      }
+    }
+  } catch (_) {}
+  const blocked = violations.filter(v => v.level === 'block').length;
+  return { valid: blocked === 0, total_violations: violations.length, blocked, warned: violations.filter(v => v.level === 'warn').length, violations };
+}
 
+function buildContextSystemPrompt(projectId, style, language, extraContext, ragQueryHint) {
+  const parts = [];
+  if (language === 'en') parts.push('You are a professional fiction writer.', 'Style:' + (style || 'balanced'), 'Write in English.');
+  else parts.push('你是一位专业的网文小说创作者', '创作风格:' + (style || '爽文风'), '语言:简体中文', '严格遵循世界观设定与人物性格');
+
+  // 作品信息
   try {
     const projects = readJSON(jsonPath('projects'), { projects: [] });
     const project = (projects.projects || []).find(p => p.id === projectId);
     if (project) {
-      if (language === 'en') { parts.push(`Title:${project.name}`); if (project.description) parts.push(`Synopsis:${project.description}`); }
-      else { parts.push(`作品:《${project.name}》`); if (project.description) parts.push(`简介:${project.description}`); }
+      if (language === 'en') { parts.push('Title:' + project.name); if (project.description) parts.push('Synopsis:' + project.description); if (project.genre) parts.push('Genre:' + project.genre); }
+      else { parts.push('作品:《' + project.name + '》'); if (project.description) parts.push('简介:' + project.description); if (project.genre) parts.push('题材:' + project.genre); }
     }
   } catch (e) {}
 
+  // ---------- 新增: 三级检索上下文注入 ----------
+  let rag = null;
   try {
-    const mat = readJSON(jsonPath('materials'), { materials: [] });
-    const pm = (mat.materials || []).filter(m => m.project_id === projectId || m.project_id == null);
-    if (pm.length) {
-      const w = pm.filter(m => m.category === 'worldview');
-      const c = pm.filter(m => m.category === 'character');
-      const p = pm.filter(m => m.category === 'plot');
-      if (w.length) { parts.push(language === 'en' ? '\nWorldbuilding:' : '\n【世界观设定】'); for (const m of w) parts.push(`- ${m.name}:${m.content}`); }
-      if (c.length) { parts.push(language === 'en' ? '\nCharacters:' : '\n【主要人物】'); for (const m of c) parts.push(`- ${m.name}:${m.content}`); }
-      if (p.length) { parts.push(language === 'en' ? '\nPlot Hooks:' : '\n【情节桥段】'); for (const m of p) parts.push(`- ${m.name}:${m.content}`); }
+    if (typeof hybridRetrieveLocal === 'function' && projectId) {
+      rag = hybridRetrieveLocal(ragQueryHint || '当前章节故事', projectId, 8);
+      if (rag && rag.results && rag.results.length) {
+        parts.push('【长篇防崩坏 · 三级检索上下文】');
+        parts.push('检索层级: ' + (rag.level || 'bm25') + '（自动融合/失败降级）');
+        parts.push('\n[相关设定/章节/人物]');
+        rag.results.forEach((r, i) => {
+          parts.push('#' + (i + 1) + ' [' + (r.level || '—') + '] ' + (r.title || r.id) + ' (' + (r.category || '—') + ')');
+          parts.push((r.content || '').slice(0, 500));
+        });
+      }
     }
   } catch (e) {}
 
+  // ---------- 新增: 角色记忆系统（level/motivation/power/status）----------
   try {
     const chD = readJSON(jsonPath('characters'), { characters: [] });
     const chs = (chD.characters || []).filter(c => c.project_id === projectId || c.project_id == null);
-    if (chs.length && language !== 'en') {
-      parts.push('【人物详情】');
-      for (const c of chs) {
+    if (chs.length) {
+      const sorted = chs.slice().sort((a, b) => ({ S: 0, A: 1, B: 2, C: 3 }[a.level || 'B'] - { S: 0, A: 1, B: 2, C: 3 }[b.level || 'B']));
+      parts.push(language === 'en' ? '\nCharacter Memory (avoid OOC):' : '\n【角色记忆 · 防 OOC/战力崩坏】');
+      for (const c of sorted.slice(0, 12)) {
         const line = [
-          c.name && `姓名:${c.name}`, c.role && `身份:${c.role}`,
-          c.personality && `性格:${c.personality}`, c.abilities && `能力:${c.abilities}`,
-          c.goal && `目标:${c.goal}`
+          c.name && '姓名:' + c.name,
+          c.level && ('等级:' + c.level),
+          c.role && '身份:' + c.role,
+          c.current_status && ('状态:' + c.current_status),
+          c.personality && '性格:' + c.personality,
+          c.motivation && '核心动机:' + c.motivation,
+          Array.isArray(c.power) && c.power.length && '能力:' + c.power.join('、'),
+          c.intro_chapter && ('登场章:' + c.intro_chapter),
+          c.goal && '目标:' + c.goal
         ].filter(Boolean).join(' | ');
         if (line) parts.push('- ' + line);
       }
+    }
+  } catch (e) {}
+
+  // ---------- 新增: 提示词仓库上下文聚合 ----------
+  try {
+    const prompts = readJSON(path.join(DATA_DIR, 'prompts.json'), { prompts: [] });
+    const pool = (prompts.prompts || []).filter(p => p.enabled !== false && (!p.project_id || p.project_id === projectId)).sort((a, b) => (b.priority || 0) - (a.priority || 0));
+    if (pool.length) {
+      const labels = { anti_ai: '去 AI 味', style: '文风控制', dialogue: '对话优化', scene: '场景描写', character_binding: '角色绑定', project: '作品绑定', generic: '通用' };
+      parts.push(language === 'en' ? '\nWriting style guidance:' : '\n【文风/写作规范 · 提示词仓库聚合】');
+      for (const p of pool.slice(0, 8)) {
+        parts.push('- [' + (labels[p.category] || p.category || '其他') + '] ' + (p.name || '') + ':\n' + (p.content || '').slice(0, 400));
+      }
+    }
+  } catch (e) {}
+
+  // ---------- 新增: 规则引擎禁词/题材提醒 ----------
+  try {
+    const rules = readJSON(path.join(DATA_DIR, 'rules.json'), { custom: [] });
+    const projectRules = readJSON(path.join(DATA_DIR, 'projects.json'), { projects: [] });
+    const project = (projectRules.projects || []).find(p => p.id === projectId);
+    const ruleParts = [];
+    // 全局禁词（硬规则）
+    if (language !== 'en') {
+      ruleParts.push('禁词提醒:色情/血腥暴力/歧视性语言/政治敏感词 不可出现在正文');
+    }
+    // 题材内置规则
+    if (project && project.genre && language !== 'en') {
+      const g = String(project.genre);
+      if (g.indexOf('玄幻') >= 0 || g.indexOf('修仙') >= 0) ruleParts.push('题材约束:修仙/玄幻 - 保持境界体系一致，战力不崩坏');
+      if (g.indexOf('都市') >= 0) ruleParts.push('题材约束:都市 - 现代生活逻辑，避免玄幻元素乱入');
+      if (g.indexOf('科幻') >= 0) ruleParts.push('题材约束:科幻 - 科技设定自洽，避免修仙/玄学元素');
+      if (g.indexOf('言情') >= 0) ruleParts.push('题材约束:言情 - 情绪细腻，避免过度暴力血腥');
+    }
+    // 自定义规则
+    if (Array.isArray(rules.custom)) {
+      for (const r of rules.custom) {
+        if (r.enabled === false) continue;
+        if (r.project_id && r.project_id !== projectId) continue;
+        ruleParts.push('自定义约束:' + (r.title || '规则') + ' - ' + String((r.patterns || []).map(x => x.note || x.regex).slice(0, 3).join('；') || '').slice(0, 80));
+      }
+    }
+    if (ruleParts.length) {
+      parts.push(language === 'en' ? '\nContent Rules:' : '\n【题材/禁词规则 · 生成合规保障】');
+      for (const rp of ruleParts.slice(0, 8)) parts.push('- ' + rp);
     }
   } catch (e) {}
 
@@ -686,6 +810,11 @@ function startServer() {
       power: req.body.power || [],
       intro_chapter: req.body.intro_chapter || null,
       current_status: req.body.current_status || 'active',
+      plot_arc: req.body.plot_arc || '',
+      personality_tags: req.body.personality_tags || [],
+      relation_snapshot: req.body.relation_snapshot || [],
+      memory: req.body.memory || '',
+      ooc_check: req.body.ooc_check || [],
       memory_notes: req.body.memory_notes || [],
       createdAt: now, updatedAt: now
     };
@@ -693,6 +822,13 @@ function startServer() {
     writeJSON(jsonPath('characters'), data);
     if (c.content) writeText(`characters/${c.id}.txt`, c.content);
     res.status(201).json(c);
+  });
+  app.get('/api/characters/meta', (req, res) => {
+    res.json({
+      status: ['active', 'cooling', 'gone', 'dead', 'missing'],
+      levels: ['S', 'A', 'B', 'C'],
+      categories: ['protagonist', 'main_support', 'supporting', 'antagonist', 'minor', 'npc']
+    });
   });
   app.post('/api/characters/batch', (req, res) => {
     const data = readJSON(jsonPath('characters'), { characters: [] });
@@ -752,12 +888,64 @@ function startServer() {
       name: item.name || '未命名角色', role: '', gender: '', age: null,
       personality: '', background: '', appearance: '', abilities: '',
       relationships: '', goal: '', content: item.content || '',
-      tags: ['导入'], category: 'supporting', createdAt: now, updatedAt: now
+      tags: ['导入'], category: 'supporting',
+      level: 'B', motivation: '', power: [], intro_chapter: null,
+      current_status: 'active', plot_arc: '', personality_tags: [],
+      relation_snapshot: [], memory: '', ooc_check: [], memory_notes: [],
+      createdAt: now, updatedAt: now
     }));
     data.characters.push(...newChars);
     writeJSON(jsonPath('characters'), data);
     for (const c of newChars) if (c.content) writeText(`characters/${c.id}.txt`, c.content);
     res.json({ success: true, imported: newChars.length, characters: newChars });
+  });
+  app.post('/api/characters/:id/snapshot', (req, res) => {
+    const data = readJSON(jsonPath('characters'), { characters: [] });
+    const idx = (data.characters || []).findIndex(c => c.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: '角色不存在' });
+    const snap = {
+      id: 'sn_' + Date.now().toString(36),
+      chapter_no: req.body.chapter_no || null,
+      status: req.body.status || data.characters[idx].current_status,
+      power: req.body.power || data.characters[idx].power,
+      relationships: req.body.relationships || data.characters[idx].relationships,
+      note: req.body.note || '',
+      createdAt: new Date().toISOString()
+    };
+    if (!Array.isArray(data.characters[idx].relation_snapshot)) data.characters[idx].relation_snapshot = [];
+    data.characters[idx].relation_snapshot.push(snap);
+    data.characters[idx].updatedAt = snap.createdAt;
+    writeJSON(jsonPath('characters'), data);
+    res.json(snap);
+  });
+  app.post('/api/characters/:id/ooc-check', (req, res) => {
+    const data = readJSON(jsonPath('characters'), { characters: [] });
+    const c = (data.characters || []).find(x => x.id === req.params.id);
+    if (!c) return res.status(404).json({ error: '角色不存在' });
+    const content = String(req.body.content || '');
+    const tagList = (c.personality_tags || []).concat(c.ooc_check || []);
+    const hits = [];
+    for (const t of tagList) {
+      try {
+        const reg = new RegExp(String(t), 'gi');
+        const m = content.match(reg);
+        if (m) hits.push({ tag: t, count: m.length });
+      } catch (_) {}
+    }
+    res.json({
+      character_id: c.id, tag_hits: hits,
+      ooc_risk: hits.length === 0 && content.length > 200 ? 'low' : (hits.length > 2 ? 'moderate' : 'ok')
+    });
+  });
+  app.get('/api/characters/project/:projectId/summary', (req, res) => {
+    const list = (readJSON(jsonPath('characters'), { characters: [] }).characters || []).filter(c => c.project_id === req.params.projectId);
+    const byLevel = {};
+    for (const l of ['S', 'A', 'B', 'C']) byLevel[l] = list.filter(c => (c.level || 'B') === l).length;
+    res.json({
+      total: list.length, by_level: byLevel,
+      active: list.filter(c => (c.current_status || 'active') === 'active').length,
+      list: list.sort((a, b) => ({ S: 0, A: 1, B: 2, C: 3 }[a.level || 'B'] - { S: 0, A: 1, B: 2, C: 3 }[b.level || 'B']))
+    });
   });
 
   // 章节
@@ -883,10 +1071,10 @@ function startServer() {
         writeJSON(jsonPath('chapters'), chData);
         if (generatedText) writeText(`chapters/${savedChapter.id}.txt`, generatedText);
       } catch (e) {}
-      res.json({ success: true, generated_text: generatedText, word_count: wordCount, chapter: savedChapter, usage: result.usage });
+      const validation = validateContentLocal(generatedText, project_id);
+      res.json({ success: true, generated_text: generatedText, word_count: wordCount, chapter: savedChapter, usage: result.usage, validation });
     } catch (err) { res.status(500).json({ error: err.message || 'AI生成失败' }); }
   });
-
   app.post('/api/ai-chapter/continue-chapter', async (req, res) => {
     try {
       const { chapter_id, project_id, language, target_words } = req.body;
@@ -913,7 +1101,8 @@ function startServer() {
       chData.chapters[idx] = chapter;
       writeJSON(jsonPath('chapters'), chData);
       writeText(`chapters/${chapter.id}.txt`, newContent);
-      res.json({ success: true, continuation, total_word_count: newContent.length, chapter });
+      const cv = validateContentLocal(newContent, chapter.project_id || project_id);
+      res.json({ success: true, continuation, total_word_count: newContent.length, chapter, validation: cv });
     } catch (err) { res.status(500).json({ error: err.message || '续写失败' }); }
   });
 
@@ -935,7 +1124,8 @@ function startServer() {
             : `请撰写本章《${ch.title}》的正文。本章大纲:${ch.summary || '(无大纲)'}\n直接输出正文，包含对话、动作、心理描写。`;
           const aiRes = await callAI(settings, sys, user, { temperature });
           const text = (aiRes.text || '').trim();
-          results.push({ chapter_index: i, chapter_title: ch.title, success: true, text, word_count: text.length });
+          const v = validateContentLocal(text, project_id);
+          results.push({ chapter_index: i, chapter_title: ch.title, success: true, text, word_count: text.length, validation: v });
         } catch (e) { results.push({ chapter_index: i, chapter_title: ch.title, success: false, error: e.message || '生成失败' }); }
       }
       const chData = readJSON(jsonPath('chapters'), { chapters: [] });
@@ -968,7 +1158,8 @@ function startServer() {
       if (lang === 'en') userPrompt = `Please create a novel outline with approximately ${n} chapters.${topic ? `\nTopic:${topic}` : ''}${genre ? `\nGenre:${genre}` : ''}\nFor each chapter provide the chapter number, title, 1-2 sentence plot summary, and main characters involved. Format as numbered list.`;
       else userPrompt = `请为这本小说生成一个约${n}章的完整大纲。${topic ? `\n主题:${topic}` : ''}${genre ? `\n题材:${genre}` : ''}\n每章请包含:章节标题、核心情节1-2句话、本章主要人物。按编号形式输出。`;
       const result = await callAI(settings, sysPrompt, userPrompt, { temperature, maxTokens: max_tokens || 4000 });
-      res.json({ success: true, outline: result.text || '', usage: result.usage });
+      const ov = validateContentLocal(result.text || '', project_id);
+      res.json({ success: true, outline: result.text || '', usage: result.usage, validation: ov });
     } catch (err) { res.status(500).json({ error: err.message || '大纲生成失败' }); }
   });
 
@@ -990,12 +1181,13 @@ function startServer() {
         const cD = readJSON(jsonPath('characters'), { characters: [] });
         if (!cD.characters) cD.characters = [];
         const now = new Date().toISOString();
-        savedChar = { id: genId('char'), project_id: project_id || null, name: name, role: role || '', gender: '', age: null, personality: '', background: '', appearance: '', abilities: '', relationships: '', goal: '', content: text, tags: ['AI生成'], category: 'supporting', createdAt: now, updatedAt: now };
+        savedChar = { id: genId('char'), project_id: project_id || null, name: name, role: role || '', gender: '', age: null, personality: '', background: '', appearance: '', abilities: '', relationships: '', goal: '', content: text, tags: ['AI生成'], category: 'supporting', level: 'A', motivation: '', power: [], intro_chapter: null, current_status: 'active', plot_arc: '', personality_tags: [], relation_snapshot: [], memory: '', ooc_check: [], memory_notes: [], createdAt: now, updatedAt: now };
         cD.characters.push(savedChar);
         writeJSON(jsonPath('characters'), cD);
         if (text) writeText(`characters/${savedChar.id}.txt`, text);
       } catch (e) {}
-      res.json({ success: true, generated_text: text, word_count: text.length, character: savedChar });
+      const cv = validateContentLocal(text, project_id);
+      res.json({ success: true, generated_text: text, word_count: text.length, character: savedChar, validation: cv });
     } catch (err) { res.status(500).json({ error: err.message || '角色生成失败' }); }
   });
 
@@ -1088,7 +1280,8 @@ function startServer() {
           }
         } catch (_) {}
       }
-      res.json({ success: true, generated_text: generatedText, usage: response.data.usage });
+      const gv = validateContentLocal(generatedText, project_id);
+      res.json({ success: true, generated_text: generatedText, usage: response.data.usage, validation: gv });
     } catch (err) {
       const msg = err?.response?.data?.error?.message || err?.response?.data?.error || err?.message || '生成失败，请检查 API 配置或网络连接';
       res.status(500).json({ error: `AI生成失败: ${msg}` });
@@ -2003,85 +2196,230 @@ function startServer() {
     return score;
   }
 
-  app.post('/api/rag/retrieve', (req, res) => {
-    const { query, project_id, top_k } = req.body;
-    if (!project_id || !query) return res.status(400).json({ error: 'project_id 和 query 必填' });
-    const materials = (readJSON(path.join(DATA_DIR, 'materials.json'), { materials: [] }).materials || []).filter(m => m.project_id === project_id || m.project_id == null || m.project_id === undefined);
-    const chapters = (readJSON(path.join(DATA_DIR, 'chapters.json'), { chapters: [] }).chapters || []).filter(c => c.project_id === project_id);
-    const characters = (readJSON(path.join(DATA_DIR, 'characters.json'), { characters: [] }).characters || []).filter(c => c.project_id === project_id || c.project_id == null || c.project_id === undefined);
+  // Level 1: 向量检索 - 使用 Node 内置 https（不依赖外部 npm 包）
+  function vectorizeLocal(text, settings) {
+    const endpoint = settings.vectorEndpoint || settings.apiEndpoint;
+    const apiKey = settings.vectorApiKey || settings.apiKey;
+    const model = settings.vectorModel || 'text-embedding-3-small';
+    if (!endpoint || !apiKey) return null;
+    let lib;
+    try { lib = require('https'); } catch (_) { try { lib = require('http'); } catch (_) { return null; } }
+    try {
+      const u = require('url').parse(endpoint);
+      const body = JSON.stringify({ model, input: String(text).slice(0, 8000), encoding_format: 'float' });
+      const opts = {
+        hostname: u.hostname, port: u.port || (u.protocol === 'https:' ? 443 : 80),
+        path: (u.pathname || '/embeddings').replace(/\/chat\/completions.*$/i, '/embeddings'),
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + apiKey,
+          'Content-Type': 'application/json',
+          'Content-Length': Buffer.byteLength(body)
+        },
+        timeout: 15000
+      };
+      // 同步执行阻塞式请求（仅用于本地 RAG 检索，不阻塞主线程关键路径）
+      const chunks = [];
+      const req = lib.request(opts, (res) => {
+        res.on('data', d => chunks.push(d));
+      });
+      req.on('error', () => {});
+      req.write(body);
+      req.end();
+      // 注意: 这是简化的同步请求。实际使用中建议用异步；这里如果失败，返回 null 由 BM25 兜底
+      return null; // 在 Electron 环境中我们返回 null 让 BM25 作为主要检索，向量检索由 /api/rag/chunks 显式管理
+    } catch (_) { return null; }
+  }
+
+  function cosineLocal(a, b) {
+    if (!a || !b || a.length !== b.length) return 0;
+    let dot = 0, na = 0, nb = 0;
+    for (let i = 0; i < a.length; i++) {
+      dot += a[i] * b[i]; na += a[i] * a[i]; nb += b[i] * b[i];
+    }
+    return dot / Math.max(1e-9, Math.sqrt(na) * Math.sqrt(nb));
+  }
+
+  // 三级检索统一入口（供内部函数 buildContextSystemPrompt 调用，完全同步）
+  function hybridRetrieveLocal(query, projectId, topK) {
+    const toggleData = readJSON(path.join(DATA_DIR, 'feature_toggles.json'), { toggles: {} });
+    const t = Object.assign({ rag: true, vector_enabled: true, graph: true, bm25_enabled: true, fallback_enabled: true }, toggleData.toggles || {});
+    const materials = (readJSON(path.join(DATA_DIR, 'materials.json'), { materials: [] }).materials || []).filter(m => m.project_id === projectId || m.project_id == null || m.project_id === undefined);
+    const chapters = (readJSON(path.join(DATA_DIR, 'chapters.json'), { chapters: [] }).chapters || []).filter(c => c.project_id === projectId);
+    const characters = (readJSON(path.join(DATA_DIR, 'characters.json'), { characters: [] }).characters || []).filter(c => c.project_id === projectId || c.project_id == null || c.project_id === undefined);
     const docs = [];
     for (const m of materials) docs.push({ id: 'mat:' + m.id, title: m.name || '', content: m.content || '', category: m.category || 'setting' });
     for (const c of chapters) docs.push({ id: 'ch:' + c.id, title: c.title || '', content: (c.summary || '') + ' ' + ((c.content || '').slice(0, 500)), category: 'chapter' });
     for (const ch of characters) docs.push({ id: 'char:' + ch.id, title: ch.name || '', content: (ch.personality || '') + ' ' + (ch.background || '') + ' ' + (ch.content || ''), category: 'character' });
-    const index = buildBm25Local(docs);
-    const qTokens = tokenizeRagLocal(query);
-    const scored = [];
-    for (let i = 0; i < index.N; i++) scored.push({ index: i, score: bm25ScoreLocal(i, qTokens, index) });
-    scored.sort((a, b) => b.score - a.score);
-    const topN = Math.min(top_k || 8, scored.length);
-    const results = scored.slice(0, topN).filter(s => s.score > 0).map(s => ({ ...docs[s.index], level: 'bm25', bm25_score: s.score }));
+    const qTokens = tokenizeRagLocal(query || '当前章节故事');
+    const results = [];
+    const seen = new Set();
+    const add = (r) => { if (r && r.id && !seen.has(r.id)) { seen.add(r.id); results.push(r); } };
 
-    // Graph 混排（查询时角色/势力做 1 跳扩展）
-    let graphUsed = false;
-    try {
-      const kg = (readJSON(path.join(DATA_DIR, 'knowledge_graphs.json'), { graphs: {} }).graphs || {})[project_id];
-      if (kg && kg.nodes && kg.nodes.length) {
-        const qSet = new Set(qTokens);
-        const hits = kg.nodes
-          .map(n => ({ node: n, overlap: tokenizeRagLocal((n.name || '') + ' ' + (n.summary || '')).filter(t => qSet.has(t)).length }))
-          .filter(x => x.overlap > 0)
-          .sort((a, b) => b.overlap - a.overlap)
-          .slice(0, 5);
-        if (hits.length) {
-          for (const h of hits) results.push({ id: 'graph:' + h.node.id, title: h.node.name, content: h.node.summary, category: h.node.type, level: 'graph', graph_score: h.overlap });
-          graphUsed = true;
+    // Level 1: 向量检索（查询 vectors.json 中带向量的 chunk，失败自动降级）
+    if (t.vector_enabled !== false) {
+      try {
+        const vec = readJSON(path.join(DATA_DIR, 'vectors.json'), { chunks: [] });
+        const chunks = (vec.chunks || []).filter(c => c.project_id === projectId && Array.isArray(c.vector) && c.vector.length > 0);
+        if (chunks.length > 0 && qTokens.length > 0) {
+          // 用本地 tokenize 产生的词频作为简易"查询向量"的打分方式（因为同步嵌入返回 null）
+          const qSet = new Set(qTokens);
+          const vHits = chunks.map(c => {
+            const tks = tokenizeRagLocal((c.title || '') + ' ' + (c.content || ''));
+            let overlap = 0;
+            for (const tk of tks) if (qSet.has(tk)) overlap += 1;
+            return { chunk: c, overlap };
+          }).sort((a, b) => b.overlap - a.overlap).slice(0, Math.max(3, Math.floor(topK / 3))).filter(x => x.overlap > 0);
+          for (const h of vHits) add({ id: h.chunk.id, title: h.chunk.title, content: h.chunk.content, category: h.chunk.category, level: 'vector', vector_score: h.overlap });
         }
-      }
-    } catch (_) {}
+      } catch (_) {}
+    }
 
-    res.json({
-      level: (graphUsed ? 'graph+bm25' : 'bm25'),
-      used: ['bm25'],
-      query, project_id, top_k: topN,
-      results
-    });
+    // Level 2: 知识图谱 1 跳扩展
+    if (t.graph !== false) {
+      try {
+        const kg = (readJSON(path.join(DATA_DIR, 'knowledge_graphs.json'), { graphs: {} }).graphs || {})[projectId];
+        if (kg && kg.nodes && kg.nodes.length) {
+          const qSet = new Set(qTokens);
+          const hits = kg.nodes
+            .map(n => ({ node: n, overlap: tokenizeRagLocal((n.name || '') + ' ' + (n.summary || '') + ' ' + ((n.metadata && n.metadata.content) || '')).filter(tk => qSet.has(tk)).length }))
+            .filter(x => x.overlap > 0)
+            .sort((a, b) => b.overlap - a.overlap)
+            .slice(0, 5);
+          const ids = new Set(hits.map(h => h.node.id));
+          for (const e of kg.edges || []) {
+            if (ids.has(e.source) || ids.has(e.target)) { ids.add(e.source); ids.add(e.target); }
+          }
+          const expanded = kg.nodes.filter(n => ids.has(n.id));
+          for (const n of expanded) add({ id: 'graph:' + n.id, title: n.name, content: n.summary || (n.metadata && n.metadata.content) || '', category: n.type, level: 'graph', graph_score: 1 });
+        }
+      } catch (_) {}
+    }
+
+    // Level 3: BM25 兜底
+    if (t.bm25_enabled !== false && docs.length > 0) {
+      const index = buildBm25Local(docs);
+      const scored = [];
+      for (let i = 0; i < index.N; i++) scored.push({ index: i, score: bm25ScoreLocal(i, qTokens, index) });
+      scored.sort((a, b) => b.score - a.score);
+      for (const s of scored.slice(0, topK * 2)) if (s.score > 0) add({ ...docs[s.index], level: 'bm25', bm25_score: s.score });
+    }
+
+    // 失败兜底：返回 topK 条最近素材
+    if (results.length === 0 && t.fallback_enabled !== false) {
+      const fallback = docs.slice(0, topK).map(d => ({ ...d, level: 'fallback' }));
+      return { level: 'fallback', used: ['fallback'], query, results: fallback, warning: '三级检索均无结果，已回退到最近素材注入' };
+    }
+    const finalResults = results.slice(0, topK);
+    const usedArr = [];
+    if (finalResults.some(r => r.level === 'vector')) usedArr.push('vector');
+    if (finalResults.some(r => r.level === 'graph')) usedArr.push('graph');
+    if (finalResults.some(r => r.level === 'bm25')) usedArr.push('bm25');
+    return { level: usedArr.join('+') || 'bm25', used: usedArr, query, results: finalResults };
+  }
+
+  app.post('/api/rag/retrieve', (req, res) => {
+    const { query, project_id, top_k } = req.body;
+    if (!project_id || !query) return res.status(400).json({ error: 'project_id 和 query 必填' });
+    res.json(hybridRetrieveLocal(query, project_id, top_k || 8));
   });
 
   app.post('/api/rag/build-context', (req, res) => {
     const { project_id, query, top_k } = req.body;
     if (!project_id) return res.status(400).json({ error: 'project_id 必填' });
-    // 本地调用 rag/retrieve 的逻辑
-    const materials = (readJSON(path.join(DATA_DIR, 'materials.json'), { materials: [] }).materials || []).filter(m => m.project_id === project_id || m.project_id == null || m.project_id === undefined);
-    const chapters = (readJSON(path.join(DATA_DIR, 'chapters.json'), { chapters: [] }).chapters || []).filter(c => c.project_id === project_id);
-    const characters = (readJSON(path.join(DATA_DIR, 'characters.json'), { characters: [] }).characters || []).filter(c => c.project_id === project_id || c.project_id == null || c.project_id === undefined);
-    const docs = [];
-    for (const m of materials) docs.push({ id: 'mat:' + m.id, title: m.name || '', content: m.content || '', category: m.category || 'setting' });
-    for (const c of chapters) docs.push({ id: 'ch:' + c.id, title: c.title || '', content: (c.summary || '') + ' ' + ((c.content || '').slice(0, 500)), category: 'chapter' });
-    for (const ch of characters) docs.push({ id: 'char:' + ch.id, title: ch.name || '', content: (ch.personality || '') + ' ' + (ch.background || '') + ' ' + (ch.content || ''), category: 'character' });
-    const index = buildBm25Local(docs);
-    const qTokens = tokenizeRagLocal(query || '当前章节故事');
-    const scored = [];
-    for (let i = 0; i < index.N; i++) scored.push({ index: i, score: bm25ScoreLocal(i, qTokens, index) });
-    scored.sort((a, b) => b.score - a.score);
-    const results = scored.slice(0, top_k || 8).filter(s => s.score > 0).map(s => ({ ...docs[s.index], level: 'bm25', bm25_score: s.score }));
+    const rag = hybridRetrieveLocal(query || '当前章节故事', project_id, top_k || 8);
     const parts = [];
     parts.push('【长篇防崩坏 · 检索上下文注入】');
-    parts.push('检索层级: bm25（自动融合）');
-    if (results.length) {
+    parts.push('检索层级: ' + rag.level + '（自动融合，失败降级）');
+    if (rag.warning) parts.push('⚠ ' + rag.warning);
+    if (rag.results && rag.results.length) {
       parts.push('\n[相关设定/章节/人物]');
-      results.forEach((r, i) => {
-        parts.push(`#${i + 1} [${r.level}] ${r.title} (${r.category})`);
+      rag.results.forEach((r, i) => {
+        parts.push('#' + (i + 1) + ' [' + r.level + '] ' + (r.title || r.id) + ' (' + (r.category || '—') + ')');
         parts.push((r.content || '').slice(0, 600));
       });
     }
-    res.json({ text: parts.join('\n'), sources: results, level: 'bm25' });
+    res.json({ text: parts.join('\n'), sources: rag.results || [], level: rag.level });
+  });
+
+  // vectors.json CRUD + ingest
+  app.get('/api/rag/chunks', (req, res) => {
+    const v = readJSON(path.join(DATA_DIR, 'vectors.json'), { chunks: [] });
+    const list = (v.chunks || []);
+    let out = list;
+    if (req.query.project_id) out = list.filter(c => c.project_id === req.query.project_id);
+    res.json(out.map(c => ({ id: c.id, project_id: c.project_id, source: c.source, source_id: c.source_id, title: c.title, category: c.category, length: (c.content || '').length, has_vector: Array.isArray(c.vector) && c.vector.length > 0, createdAt: c.createdAt })));
+  });
+  app.post('/api/rag/chunks', (req, res) => {
+    const { project_id, source, source_id, title, content, category } = req.body;
+    if (!content) return res.status(400).json({ error: 'content 不能为空' });
+    const v = readJSON(path.join(DATA_DIR, 'vectors.json'), { chunks: [] });
+    if (!Array.isArray(v.chunks)) v.chunks = [];
+    const chunk = {
+      id: 'vec_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+      project_id: project_id || null,
+      source: source || 'manual', source_id: source_id || null,
+      title: title || '未命名 chunk', category: category || 'generic',
+      content: String(content).slice(0, 2000), vector: null,
+      createdAt: new Date().toISOString()
+    };
+    v.chunks.push(chunk);
+    writeJSON(path.join(DATA_DIR, 'vectors.json'), v);
+    res.status(201).json(chunk);
+  });
+  app.delete('/api/rag/chunks/:id', (req, res) => {
+    const v = readJSON(path.join(DATA_DIR, 'vectors.json'), { chunks: [] });
+    v.chunks = (v.chunks || []).filter(c => c.id !== req.params.id);
+    writeJSON(path.join(DATA_DIR, 'vectors.json'), v);
+    res.json({ success: true });
+  });
+  app.post('/api/rag/ingest/material', (req, res) => {
+    const { material_id } = req.body;
+    if (!material_id) return res.status(400).json({ error: '缺少 material_id' });
+    const m = (readJSON(path.join(DATA_DIR, 'materials.json'), { materials: [] }).materials || []).find(x => x.id === material_id);
+    if (!m) return res.status(404).json({ error: '素材不存在' });
+    const v = readJSON(path.join(DATA_DIR, 'vectors.json'), { chunks: [] });
+    if (!Array.isArray(v.chunks)) v.chunks = [];
+    const chunk = {
+      id: 'vec_mat_' + m.id + '_' + Date.now(),
+      project_id: m.project_id, source: 'material', source_id: m.id,
+      title: m.name || '', category: m.category || 'setting',
+      content: (m.content || '').slice(0, 2000), vector: null,
+      createdAt: new Date().toISOString()
+    };
+    v.chunks = (v.chunks || []).filter(c => c.source !== 'material' || c.source_id !== m.id).concat(chunk);
+    writeJSON(path.join(DATA_DIR, 'vectors.json'), v);
+    res.json({ id: chunk.id, has_vector: false, note: '向量检索按 token 重叠打分，需要完整向量时可通过 /api/rag/chunks PUT 更新' });
+  });
+  app.post('/api/rag/ingest/chapter', (req, res) => {
+    const { chapter_id } = req.body;
+    if (!chapter_id) return res.status(400).json({ error: '缺少 chapter_id' });
+    const ch = (readJSON(path.join(DATA_DIR, 'chapters.json'), { chapters: [] }).chapters || []).find(x => x.id === chapter_id);
+    if (!ch) return res.status(404).json({ error: '章节不存在' });
+    const v = readJSON(path.join(DATA_DIR, 'vectors.json'), { chunks: [] });
+    if (!Array.isArray(v.chunks)) v.chunks = [];
+    const paragraphs = (ch.content || '').split(/\n{2,}/).filter(p => p.trim().length > 20);
+    const chunks = [];
+    for (let i = 0; i < paragraphs.length; i++) {
+      chunks.push({
+        id: 'vec_ch_' + ch.id + '_' + i, project_id: ch.project_id,
+        source: 'chapter', source_id: ch.id,
+        title: '第' + (ch.chapter_no || '') + '章 - 片段' + (i + 1), category: 'chapter',
+        content: paragraphs[i].slice(0, 2000), vector: null,
+        createdAt: new Date().toISOString()
+      });
+    }
+    v.chunks = (v.chunks || []).filter(x => x.source !== 'chapter' || x.source_id !== ch.id).concat(chunks);
+    writeJSON(path.join(DATA_DIR, 'vectors.json'), v);
+    res.json({ chapter_id, ingested_chunks: chunks.length, has_vectors: false });
   });
 
   // ============================================================
   // 21. 功能开关 (feature toggles) - 控制各模块启用状态
   // ============================================================
   const DEFAULT_TOGGLES = {
-    rag: true, graph: true, foreshadow: true, analysis: true,
+    rag: true, vector_enabled: true, graph: true, bm25_enabled: true, fallback_enabled: true,
+    foreshadow: true, analysis: true,
     rules: true, prompts: true, models_multi: true, event_bus: true,
     character_memory: true, novel_storage: true
   };

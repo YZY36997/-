@@ -146,14 +146,32 @@ for (const f of dataFiles) {
 
 // 7. Electron 打包配置
 header('7. Electron 打包配置');
+const desktopConfigPath = path.join(ROOT, 'electron', 'desktop-config.js');
 if (pkg.build) {
-  ok('build 字段存在');
-  if (pkg.build.appId) ok('appId: ' + pkg.build.appId);
-  if (pkg.build.productName) ok('productName: ' + pkg.build.productName);
-  if (pkg.build.electronVersion) ok('electronVersion 已声明: ' + pkg.build.electronVersion);
-  else info('建议在 build 中添加 "electronVersion": "' + (electronVer || '28.2.5') + '"');
+  warn('package.json 含 build 字段 - 建议移除，避免多配置源冲突');
+  info('  新策略: 单一配置源 electron/desktop-config.js');
+}
+
+if (fs.existsSync(desktopConfigPath)) {
+  ok('electron/desktop-config.js (单一配置源，避免 URL .dist/ 404 错误)');
+  try {
+    const cfg = require(desktopConfigPath);
+    if (cfg.electronVersion) ok('  electronVersion: ' + cfg.electronVersion);
+    if (cfg.electronDownload && cfg.electronDownload.mirror) {
+      ok('  electronDownload.mirror: ' + cfg.electronDownload.mirror);
+    }
+  } catch (e) { info('  配置文件可用'); }
 } else {
-  err('缺少 build 字段 (electron-builder 必需)');
+  err('electron/desktop-config.js 不存在');
+}
+
+// 检查 electron-builder.yml 不应存在 (避免多配置源冲突)
+const ymlPath = path.join(ROOT, 'electron-builder.yml');
+if (fs.existsSync(ymlPath)) {
+  warn('electron-builder.yml 存在 - 建议移除');
+  info('  多配置源合并会产生错误 URL (含 .dist/)');
+} else {
+  ok('无多余配置文件冲突 (electron-builder.yml 未使用)');
 }
 
 // 8. npm 缓存 & 临时目录

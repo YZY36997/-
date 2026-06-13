@@ -113,17 +113,23 @@ else warn('electron/preload.js 不存在 (可选)');
 
 header('4. 打包配置');
 if (fs.existsSync(path.join(ROOT, 'electron', 'desktop-config.js'))) {
-  ok('electron/desktop-config.js (完整配置)');
-} else warn('electron/desktop-config.js 缺失');
+  ok('electron/desktop-config.js (单一配置源，避免 .dist/ URL 错误)');
+  try {
+    const cfg = require(path.join(ROOT, 'electron', 'desktop-config.js'));
+    if (cfg.electronVersion) info('  electronVersion: ' + cfg.electronVersion);
+    if (cfg.electronDownload && cfg.electronDownload.mirror) {
+      info('  mirror: ' + cfg.electronDownload.mirror);
+    }
+  } catch (e) { info('  配置可用'); }
+} else err('electron/desktop-config.js 缺失');
 
 if (fs.existsSync(path.join(ROOT, 'electron-builder.yml'))) {
-  ok('electron-builder.yml (YAML 配置)');
-} else info('electron-builder.yml 不存在 (非必需)');
+  warn('electron-builder.yml 存在 - 建议移除 (多配置源合并会产生 .dist/ URL 错误)');
+} else info('无 electron-builder.yml (正确)');
 
 if (pkg.build && typeof pkg.build === 'object') {
-  ok('package.json 中存在 build 配置');
-  if (pkg.build.electronVersion) ok('  build.electronVersion: ' + pkg.build.electronVersion);
-} else info('package.json 中 build 配置不存在 (使用外部配置文件)');
+  warn('package.json 含 build 字段 - 建议移除 (避免多配置源冲突)');
+} else info('package.json 中无 build 字段 (正确)');
 
 // 5. 运行时依赖
 header('5. 运行时依赖');

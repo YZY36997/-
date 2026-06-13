@@ -72,49 +72,5 @@
     "vue": "3.4.21",
     "vue-router": "4.3.0",
     "wait-on": "7.2.0"
-  },
-  "build": {
-    "appId": "com.lingmo.novel-studio",
-    "productName": "灵墨小说工坊",
-    "copyright": "Copyright © 2024 LingMo Studio",
-    "electronVersion": "28.2.5",
-    "directories": {
-      "output": "release"
-    },
-    "win": {
-      "target": [
-        {
-          "target": "nsis",
-          "arch": ["x64"]
-        },
-        {
-          "target": "portable",
-          "arch": ["x64"]
-        }
-      ]
-    },
-    "nsis": {
-      "oneClick": false,
-      "perMachine": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "灵墨小说工坊"
-    },
-    "portable": {
-      "artifactName": "${productName}-${version}-portable.${ext}"
-    },
-    "files": [
-      "dist/**/*",
-      "electron/**/*",
-      "package.json"
-    ],
-    "extraResources": [
-      {
-        "from": "backend/data",
-        "to": "data"
-      }
-    ],
-    "asar": false
   }
 }

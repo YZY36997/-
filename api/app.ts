@@ -26,6 +26,13 @@ import settingsRouter from './routes/settings.js'
 import charactersRouter from './routes/characters.js'
 import chaptersRouter from './routes/chapters.js'
 import aiChapterRouter from './routes/ai-chapter.js'
+import ragRouter from './routes/rag.js'
+import knowledgeGraphRouter from './routes/knowledge-graph.js'
+import foreshadowRouter from './routes/foreshadow.js'
+import analysisRouter from './routes/analysis.js'
+import rulesEngineRouter from './routes/rules-engine.js'
+import promptsRouter from './routes/prompts.js'
+import modelsRouter from './routes/models.js'
 import authRouter from './routes/auth.ts'
 
 const app = express()
@@ -49,16 +56,23 @@ app.use('/api/settings', settingsRouter)
 app.use('/api/characters', charactersRouter)
 app.use('/api/chapters', chaptersRouter)
 app.use('/api/ai-chapter', aiChapterRouter)
+app.use('/api/rag', ragRouter)
+app.use('/api/knowledge-graph', knowledgeGraphRouter)
+app.use('/api/foreshadow', foreshadowRouter)
+app.use('/api/analysis', analysisRouter)
+app.use('/api/rules', rulesEngineRouter)
+app.use('/api/prompts', promptsRouter)
+app.use('/api/models', modelsRouter)
 app.use('/api/auth', authRouter)
 
 // 健康检查
 app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
-    version: '2.0.0',
+    version: '3.0.0',
     dataDir: DATA_DIR,
     timestamp: new Date().toISOString(),
-    features: ['projects', 'materials', 'chapters', 'characters', 'ai-chapter', 'outline', 'templates', 'generators', 'settings']
+    features: ['projects', 'materials', 'chapters', 'characters', 'ai-chapter', 'outline', 'templates', 'generators', 'settings', 'rag', 'knowledge-graph', 'foreshadow', 'analysis', 'rules-engine', 'prompts', 'models']
   })
 })
 

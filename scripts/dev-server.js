@@ -1327,12 +1327,798 @@ app.post('/api/settings/reset', (req, res) => {
 });
 
 // ============================================================
-// 13. 启动服务器
+// 14. 知识图谱 (knowledge-graph)
 // ============================================================
-const PORT = parseInt(process.env.PORT) || 3001;
-app.listen(PORT, () => {
-  console.log('═══════════════════════════════════════════');
-  console.log(` 灵墨小说工坊 API 服务运行中 - http://localhost:${PORT}`);
-  console.log(` 数据目录: ${DATA_DIR}`);
-  console.log('═══════════════════════════════════════════');
+app.get('/api/knowledge-graph/meta', (req, res) => {
+  res.json({
+    relation_types: [
+      { id: 'master_apprentice', label: '师徒', directional: true, from: '师父', to: '弟子' },
+      { id: 'enemy', label: '敌对', directional: false },
+      { id: 'ambiguous', label: '暧昧', directional: false },
+      { id: 'superior_subordinate', label: '上下级', directional: true, from: '上司', to: '下属' },
+      { id: 'kinship', label: '血缘', directional: false },
+      { id: 'friend', label: '朋友', directional: false },
+      { id: 'colleague', label: '同门/同事', directional: false },
+      { id: 'owner', label: '归属', directional: true, from: '所属', to: '成员' },
+      { id: 'team', label: '队伍', directional: false },
+      { id: 'foreshadow_owner', label: '伏笔相关者', directional: true, from: '触发者', to: '伏笔' },
+      { id: 'other', label: '其他', directional: false }
+    ],
+    node_types: [
+      { id: 'character', label: '人物' }, { id: 'faction', label: '势力' },
+      { id: 'item', label: '道具/功法' }, { id: 'location', label: '地点' },
+      { id: 'foreshadowing', label: '伏笔' }, { id: 'generic', label: '其他' }
+    ]
+  });
 });
+
+app.get('/api/knowledge-graph', (req, res) => {
+  const all = readJSON('knowledge_graphs.json', { graphs: {} });
+  const g = (all.graphs && all.graphs[req.query.project_id]) || { nodes: [], edges: [], history: [] };
+  res.json(g);
+});
+
+app.post('/api/knowledge-graph/nodes', (req, res) => {
+  const all = readJSON('knowledge_graphs.json', { graphs: {} });
+  if (!all.graphs) all.graphs = {};
+  if (!all.graphs[req.body.project_id]) all.graphs[req.body.project_id] = { nodes: [], edges: [], history: [] };
+  const node = {
+    id: 'n_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+    type: req.body.type || 'character',
+    name: req.body.name || '未命名节点',
+    summary: req.body.summary || '',
+    tags: req.body.tags || [],
+    character_id: req.body.character_id || null,
+    coordinates: req.body.coordinates || { x: Math.random() * 600, y: Math.random() * 400 },
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  };
+  all.graphs[req.body.project_id].nodes.push(node);
+  writeJSON('knowledge_graphs.json', all);
+  res.status(201).json(node);
+});
+
+app.put('/api/knowledge-graph/nodes/:id', (req, res) => {
+  const all = readJSON('knowledge_graphs.json', { graphs: {} });
+  const pid = req.body.project_id || req.query.project_id;
+  if (!all.graphs || !all.graphs[pid]) return res.status(404).json({ error: '不存在项目图谱' });
+  const g = all.graphs[pid];
+  const idx = g.nodes.findIndex(n => n.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: '节点不存在' });
+  g.nodes[idx] = { ...g.nodes[idx], ...req.body, id: req.params.id, updatedAt: new Date().toISOString() };
+  writeJSON('knowledge_graphs.json', all);
+  res.json(g.nodes[idx]);
+});
+
+app.delete('/api/knowledge-graph/nodes/:id', (req, res) => {
+  const all = readJSON('knowledge_graphs.json', { graphs: {} });
+  const pid = req.query.project_id;
+  if (!all.graphs || !all.graphs[pid]) return res.status(404).json({ error: '不存在项目图谱' });
+  all.graphs[pid].nodes = all.graphs[pid].nodes.filter(n => n.id !== req.params.id);
+  all.graphs[pid].edges = all.graphs[pid].edges.filter(e => e.source !== req.params.id && e.target !== req.params.id);
+  writeJSON('knowledge_graphs.json', all);
+  res.json({ success: true });
+});
+
+app.post('/api/knowledge-graph/edges', (req, res) => {
+  const all = readJSON('knowledge_graphs.json', { graphs: {} });
+  if (!all.graphs[req.body.project_id]) all.graphs[req.body.project_id] = { nodes: [], edges: [], history: [] };
+  const g = all.graphs[req.body.project_id];
+  if (!req.body.source || !req.body.target) return res.status(400).json({ error: 'source / target 必填' });
+  const edge = {
+    id: 'e_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+    source: req.body.source, target: req.body.target,
+    type: req.body.type || 'other', label: req.body.label || '', weight: req.body.weight || 1,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  };
+  g.edges.push(edge);
+  writeJSON('knowledge_graphs.json', all);
+  res.status(201).json(edge);
+});
+
+app.put('/api/knowledge-graph/edges/:id', (req, res) => {
+  const all = readJSON('knowledge_graphs.json', { graphs: {} });
+  const pid = req.body.project_id || req.query.project_id;
+  if (!all.graphs || !all.graphs[pid]) return res.status(404).json({ error: '不存在项目图谱' });
+  const g = all.graphs[pid];
+  const idx = g.edges.findIndex(e => e.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: '边不存在' });
+  g.edges[idx] = { ...g.edges[idx], ...req.body, id: req.params.id, updatedAt: new Date().toISOString() };
+  writeJSON('knowledge_graphs.json', all);
+  res.json(g.edges[idx]);
+});
+
+app.delete('/api/knowledge-graph/edges/:id', (req, res) => {
+  const all = readJSON('knowledge_graphs.json', { graphs: {} });
+  const pid = req.query.project_id;
+  if (!all.graphs || !all.graphs[pid]) return res.status(404).json({ error: '不存在项目图谱' });
+  all.graphs[pid].edges = all.graphs[pid].edges.filter(e => e.id !== req.params.id);
+  writeJSON('knowledge_graphs.json', all);
+  res.json({ success: true });
+});
+
+app.post('/api/knowledge-graph/history', (req, res) => {
+  const all = readJSON('knowledge_graphs.json', { graphs: {} });
+  if (!all.graphs[req.body.project_id]) all.graphs[req.body.project_id] = { nodes: [], edges: [], history: [] };
+  const g = all.graphs[req.body.project_id];
+  if (!g.history) g.history = [];
+  const h = {
+    id: 'h_' + Date.now().toString(36),
+    edge_id: req.body.edge_id, chapter_no: req.body.chapter_no || null,
+    from_type: req.body.from_type, to_type: req.body.to_type,
+    label: req.body.label || '', description: req.body.description || '',
+    createdAt: new Date().toISOString()
+  };
+  g.history.push(h);
+  writeJSON('knowledge_graphs.json', all);
+  res.status(201).json(h);
+});
+
+app.get('/api/knowledge-graph/history', (req, res) => {
+  const all = readJSON('knowledge_graphs.json', { graphs: {} });
+  const g = (all.graphs || {})[req.query.project_id] || { history: [] };
+  res.json(g.history || []);
+});
+
+app.post('/api/knowledge-graph/auto-import-characters', (req, res) => {
+  const { project_id } = req.body;
+  const charsData = readJSON('characters.json', { characters: [] });
+  const list = (charsData.characters || []).filter(c => c.project_id === project_id || (c.project_id == null));
+  const all = readJSON('knowledge_graphs.json', { graphs: {} });
+  if (!all.graphs[project_id]) all.graphs[project_id] = { nodes: [], edges: [], history: [] };
+  const g = all.graphs[project_id];
+  const existing = new Set(g.nodes.filter(n => n.type === 'character').map(n => n.character_id));
+  for (const c of list) {
+    if (existing.has(c.id)) continue;
+    g.nodes.push({
+      id: 'n_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+      type: 'character', name: c.name,
+      summary: (c.personality || '') + ' ' + (c.background || ''),
+      tags: c.tags || [], character_id: c.id,
+      coordinates: { x: 120 + (existing.size + g.nodes.indexOf(g.nodes[g.nodes.length - 1]) || 0) * 20, y: 120 + (existing.size + 1) * 20 },
+      createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+    });
+  }
+  writeJSON('knowledge_graphs.json', all);
+  res.json({ imported: list.filter(c => !existing.has(c.id)).length, total_nodes: g.nodes.length });
+});
+
+app.get('/api/knowledge-graph/summary', (req, res) => {
+  const all = readJSON('knowledge_graphs.json', { graphs: {} });
+  const g = (all.graphs || {})[req.query.project_id] || { nodes: [], edges: [], history: [] };
+  const byType = {};
+  for (const n of g.nodes || []) byType[n.type] = (byType[n.type] || 0) + 1;
+  res.json({ nodes: (g.nodes || []).length, edges: (g.edges || []).length, history: (g.history || []).length, by_type: byType });
+});
+
+app.get('/api/knowledge-graph/adjacency', (req, res) => {
+  const all = readJSON('knowledge_graphs.json', { graphs: {} });
+  const g = (all.graphs || {})[req.query.project_id] || { nodes: [], edges: [] };
+  const adj = {};
+  for (const n of g.nodes || []) adj[n.id] = [];
+  for (const e of g.edges || []) {
+    if (adj[e.source]) adj[e.source].push(e.target);
+    if (adj[e.target]) adj[e.target].push(e.source);
+  }
+  res.json({ adjacency: adj, nodes: g.nodes, edges: g.edges });
+});
+
+// ============================================================
+// 15. 伏笔库 (foreshadow)
+// ============================================================
+app.get('/api/foreshadow', (req, res) => {
+  const all = readJSON('foreshadows.json', { foreshadows: [] });
+  let list = all.foreshadows || [];
+  if (req.query.project_id) list = list.filter(f => f.project_id === req.query.project_id);
+  if (req.query.status) list = list.filter(f => f.status === req.query.status);
+  res.json(list.sort((a, b) => (a.priority || 0) < (b.priority || 0) ? 1 : -1));
+});
+
+app.post('/api/foreshadow', (req, res) => {
+  const all = readJSON('foreshadows.json', { foreshadows: [] });
+  const f = {
+    id: 'fs_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 6),
+    project_id: req.body.project_id || null,
+    title: req.body.title || '未命名伏笔',
+    content: req.body.content || '',
+    category: req.body.category || 'mid',
+    status: req.body.status || 'planted',
+    planted_chapter: req.body.planted_chapter || null,
+    recovered_chapter: req.body.recovered_chapter || null,
+    related_characters: req.body.related_characters || [],
+    related_materials: req.body.related_materials || [],
+    priority: req.body.priority ?? 3, tags: req.body.tags || [], note: req.body.note || '',
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  };
+  all.foreshadows.push(f);
+  writeJSON('foreshadows.json', all);
+  res.status(201).json(f);
+});
+
+app.put('/api/foreshadow/:id', (req, res) => {
+  const all = readJSON('foreshadows.json', { foreshadows: [] });
+  const idx = (all.foreshadows || []).findIndex(f => f.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: '伏笔不存在' });
+  all.foreshadows[idx] = { ...all.foreshadows[idx], ...req.body, id: req.params.id, updatedAt: new Date().toISOString() };
+  writeJSON('foreshadows.json', all);
+  res.json(all.foreshadows[idx]);
+});
+
+app.post('/api/foreshadow/:id/recover', (req, res) => {
+  const all = readJSON('foreshadows.json', { foreshadows: [] });
+  const idx = (all.foreshadows || []).findIndex(f => f.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: '伏笔不存在' });
+  all.foreshadows[idx].status = 'recovered';
+  all.foreshadows[idx].recovered_chapter = req.body.recovered_chapter || all.foreshadows[idx].recovered_chapter;
+  all.foreshadows[idx].recovered_note = req.body.note || '';
+  all.foreshadows[idx].updatedAt = new Date().toISOString();
+  writeJSON('foreshadows.json', all);
+  res.json(all.foreshadows[idx]);
+});
+
+app.delete('/api/foreshadow/:id', (req, res) => {
+  const all = readJSON('foreshadows.json', { foreshadows: [] });
+  all.foreshadows = (all.foreshadows || []).filter(f => f.id !== req.params.id);
+  writeJSON('foreshadows.json', all);
+  res.json({ success: true });
+});
+
+app.get('/api/foreshadow/summary/:projectId', (req, res) => {
+  const list = (readJSON('foreshadows.json', { foreshadows: [] }).foreshadows || []).filter(f => f.project_id === req.params.projectId);
+  res.json({
+    total: list.length,
+    planted: list.filter(f => f.status === 'planted').length,
+    recovered: list.filter(f => f.status === 'recovered').length,
+    dropped: list.filter(f => f.status === 'dropped').length,
+    suspense: list.filter(f => f.status === 'suspense').length,
+    recovery_ratio: list.length ? +(list.filter(f => f.status === 'recovered').length / list.length).toFixed(2) : 0,
+    list
+  });
+});
+
+// ============================================================
+// 16. 追读力分析 (analysis)
+// ============================================================
+const ANALYSIS_HOOK_PATTERNS = [
+  { id: 'question', label: '提问式开篇', regex: /为什么|怎么|难道|究竟/g, score: 2 },
+  { id: 'conflict', label: '冲突式开篇', regex: /怒吼|大骂|怒斥|反抗|对峙|冷笑/g, score: 3 },
+  { id: 'reversal', label: '反转式开篇', regex: /没想到|居然|竟然|反倒|谁知|哪知/g, score: 4 },
+  { id: 'dialogue', label: '悬念式开篇', regex: /秘密|真相|原来|其实|不知|没有人|可怕/g, score: 3 },
+  { id: 'foreshadow', label: '伏笔式开篇', regex: /多年以后|后来|将来|有一天|那一天|日后/g, score: 2 }
+];
+const ANALYSIS_CLIMAX_PATTERNS = [
+  { id: 'power_up', label: '修为突破', regex: /突破|晋升|境界|修为|达到|气势|轰然|嗡|竟|势不可挡|势如破竹/g, score: 3 },
+  { id: 'treasure', label: '宝物/捡漏', regex: /原来是|竟是|此物|宝物|法器|灵丹|金色|红光|光芒|光泽|珠光|宝气|熠熠|灵气/g, score: 4 },
+  { id: 'face_slap', label: '打脸/反转', regex: /打脸|冷哼|鄙夷|不屑|震惊|惊呆|目瞪|哗然|难以置信|脸色|众人/g, score: 5 },
+  { id: 'reward', label: '奖励/兑现', regex: /奖励|获得|得到|到手|收获|赢|成功|达成|完成|成就|拿到/g, score: 3 },
+  { id: 'emotion', label: '情感爆发', regex: /热泪|感动|哭|笑|激动|狂喜|心里|暖|软|甜|心动/g, score: 4 },
+  { id: 'mystery', label: '悬念揭露', regex: /原来|竟然|果然|居然|真相|秘密|揭晓|公开/g, score: 4 }
+];
+
+function analysisCountMatches(text, patterns) {
+  const hits = {}; let total = 0;
+  for (const p of patterns) {
+    const m = text.match(p.regex);
+    const c = m ? m.length : 0;
+    if (c > 0) hits[p.id] = { count: c, label: p.label };
+    total += c;
+  }
+  return { hits, total };
+}
+
+app.post('/api/analysis/chapter', (req, res) => {
+  const text = String(req.body.content || '');
+  const ch = { hook: analysisCountMatches(text.slice(0, 200), ANALYSIS_HOOK_PATTERNS), hits: analysisCountMatches(text, ANALYSIS_CLIMAX_PATTERNS) };
+  const hookStrength = Math.min(100, Math.round(ch.hook.total * 12));
+  const density = text.length ? +(ch.hits.total / (text.length / 1000)).toFixed(2) : 0;
+  res.json({
+    chapter_id: req.body.chapter_id, project_id: req.body.project_id,
+    word_count: text.length, hook_strength: hookStrength, hook_hits: ch.hook.hits,
+    climax_hits: ch.hits.hits, climax_total: ch.hits.total, density_per_1k: density,
+    sentence_count: text.split(/[。！？.!?\n]/g).length - 1,
+    dialogue_count: Math.floor((text.match(/["""]/g) || []).length / 2),
+    timestamp: new Date().toISOString()
+  });
+});
+
+app.get('/api/analysis/dashboard/:projectId', async (req, res) => {
+  const chapters = (readJSON('chapters.json', { chapters: [] }).chapters || []).filter(c => c.project_id === req.params.projectId);
+  const fores = (readJSON('foreshadows.json', { foreshadows: [] }).foreshadows || []).filter(f => f.project_id === req.params.projectId);
+  const totalWords = chapters.reduce((s, c) => s + (c.word_count || 0), 0);
+  const perChapter = [];
+  let totalHook = 0, totalDensity = 0;
+  for (const c of chapters) {
+    const text = String(c.content || '');
+    const hook = analysisCountMatches(text.slice(0, 200), ANALYSIS_HOOK_PATTERNS);
+    const climax = analysisCountMatches(text, ANALYSIS_CLIMAX_PATTERNS);
+    const hs = Math.min(100, Math.round(hook.total * 12));
+    const dens = text.length ? +(climax.total / (text.length / 1000)).toFixed(2) : 0;
+    totalHook += hs; totalDensity += dens;
+    perChapter.push({ chapter_id: c.id, chapter_no: c.chapter_no, title: c.title, hook_strength: hs, climax_total: climax.total, density_per_1k: dens, word_count: c.word_count || 0 });
+  }
+  const avgHook = chapters.length ? +(totalHook / chapters.length).toFixed(1) : 0;
+  const avgDensity = chapters.length ? +(totalDensity / chapters.length).toFixed(2) : 0;
+  const recovered = fores.filter(f => f.status === 'recovered').length;
+  const composite = Math.min(100, Math.round(avgHook * 0.3 + avgDensity * 35 + (fores.length ? (recovered / fores.length) * 15 : 0) + Math.min(30, chapters.length * 0.8)));
+  res.json({
+    project_id: req.params.projectId,
+    chapters_count: chapters.length, total_words: totalWords,
+    foreshadows: { total: fores.length, planted: fores.filter(f => f.status === 'planted').length, recovered, dropped: fores.filter(f => f.status === 'dropped').length, recovery_ratio: fores.length ? +(recovered / fores.length).toFixed(2) : 0 },
+    avg_hook_strength: avgHook, avg_density_per_1k: avgDensity,
+    composite_score: composite, open_plot_debt: fores.filter(f => f.status === 'planted').length,
+    per_chapter: perChapter, rating: composite >= 80 ? 'A' : composite >= 60 ? 'B' : composite >= 40 ? 'C' : 'D'
+  });
+});
+
+app.post('/api/analysis/suggestions/:projectId', async (req, res) => {
+  try {
+    // 兼容：直接调用当前文件的 analysis/dashboard API
+    const base = 'http://localhost:' + (process.env.PORT || 3001);
+    const dashRaw = await nativePost(base + '/api/analysis/dashboard/' + req.params.projectId, {}, { timeout: 15000 }).catch(() => null);
+    const dash = dashRaw && dashRaw.data ? dashRaw.data : dashRaw;
+    const list = [];
+    if (dash && dash.avg_hook_strength !== undefined) {
+      if (dash.avg_hook_strength < 30) list.push({ level: 'warn', title: '开头 Hook 偏弱', content: '建议章节开头加入提问/冲突/反转式开头，增强读者停留欲。' });
+      if (dash.avg_density_per_1k < 0.8) list.push({ level: 'warn', title: '爽点密度偏低', content: '建议在章节中加强修为突破 / 打脸 / 宝物获得这类情节，把爽点密度提到 1.0/千字以上。' });
+      if (dash.open_plot_debt > 5) list.push({ level: 'warn', title: '情节债务过多', content: `当前存在 ${dash.open_plot_debt} 条未回收伏笔，建议加快回收节奏，避免读者遗忘。` });
+      if (dash.chapters_count < 3) list.push({ level: 'info', title: '章节数过少', content: '当前作品章节过少，建议至少累积到 5 章以上分析会更有意义。' });
+      if (dash.composite_score >= 80) list.push({ level: 'success', title: '整体追读力良好', content: `综合分数 ${dash.composite_score}（${dash.rating}），建议继续保持当前叙事节奏。` });
+      else list.push({ level: 'info', title: '追读力待加强', content: `综合分数 ${dash.composite_score}（${dash.rating}），建议重点强化 Hook 和爽点分布。` });
+    } else list.push({ level: 'info', title: '分析数据不可用', content: '请先确认项目已有章节内容。' });
+    res.json({ suggestions: list });
+  } catch (e) { res.status(500).json({ error: e.message || '分析建议失败' }); }
+});
+
+// ============================================================
+// 17. 规则引擎 (rules-engine) - 禁词/题材/自定义/校验
+// ============================================================
+app.get('/api/rules/meta', (req, res) => {
+  res.json({
+    builtin_forbidden: [
+      { regex: '色情|淫秽|淫荡|强暴|强奸|性交', level: 'block', note: '色情禁词（平台高风险）' },
+      { regex: '屠杀|虐杀|血肉横飞|肢解|断头|开膛|血腥', level: 'block', note: '血腥暴力禁词' },
+      { regex: '歧视|种族|民族|黑人|白皮|白猪|黄祸|支那', level: 'block', note: '种族/民族歧视' },
+      { regex: '共产党|政府|国家领导人|习近平', level: 'warn', note: '敏感政治话题，建议避免' }
+    ],
+    genres: ['玄幻仙侠', '都市', '历史军事', '恐怖悬疑', '科幻', '女频言情'],
+    note: '自定义规则通过 /custom 管理；/validate 会同时应用全局禁词+题材内置规则+自定义规则+项目绑定规则'
+  });
+});
+
+app.get('/api/rules', (req, res) => {
+  const all = readJSON('rules.json', { custom: [], project: {} });
+  res.json({ enabled: all.enabled !== false, custom: all.custom || [], project_ids: Object.keys(all.project || {}) });
+});
+
+app.post('/api/rules/custom', (req, res) => {
+  const all = readJSON('rules.json', { custom: [], project: {} });
+  if (!all.custom) all.custom = [];
+  const rule = {
+    id: 'r_' + Date.now().toString(36), type: req.body.type || 'custom',
+    title: req.body.title || '自定义规则', scope: req.body.scope || 'global',
+    project_id: req.body.project_id || null, patterns: req.body.patterns || [],
+    enabled: req.body.enabled !== false,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  };
+  all.custom.push(rule);
+  writeJSON('rules.json', all);
+  res.status(201).json(rule);
+});
+
+app.put('/api/rules/custom/:id', (req, res) => {
+  const all = readJSON('rules.json', { custom: [], project: {} });
+  const idx = (all.custom || []).findIndex(r => r.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: '规则不存在' });
+  all.custom[idx] = { ...all.custom[idx], ...req.body, id: req.params.id, updatedAt: new Date().toISOString() };
+  writeJSON('rules.json', all);
+  res.json(all.custom[idx]);
+});
+
+app.delete('/api/rules/custom/:id', (req, res) => {
+  const all = readJSON('rules.json', { custom: [], project: {} });
+  all.custom = (all.custom || []).filter(r => r.id !== req.params.id);
+  writeJSON('rules.json', all);
+  res.json({ success: true });
+});
+
+app.put('/api/rules/project/:projectId/bind', (req, res) => {
+  const all = readJSON('rules.json', { custom: [], project: {} });
+  if (!all.project) all.project = {};
+  all.project[req.params.projectId] = {
+    genre: req.body.genre || '',
+    extra_rules: req.body.extra_rules || [],
+    auto_check_on_generate: req.body.auto_check_on_generate !== false,
+    updatedAt: new Date().toISOString()
+  };
+  writeJSON('rules.json', all);
+  res.json(all.project[req.params.projectId]);
+});
+
+app.post('/api/rules/validate', (req, res) => {
+  const { text, project_id, extra_genre } = req.body;
+  const content = String(text || '');
+  const violations = [];
+  const all = readJSON('rules.json', { custom: [], project: {} });
+  if (all.enabled === false) return res.json({ enabled: false, skipped: true, violations: [] });
+  // 1 全局禁词
+  [
+    { regex: '色情|淫秽|淫荡|强暴|强奸|性交', level: 'block', note: '色情禁词' },
+    { regex: '屠杀|虐杀|血肉横飞|肢解|断头|开膛|血腥', level: 'block', note: '血腥暴力禁词' },
+    { regex: '歧视|种族|民族|黑人|白皮|白猪|黄祸|支那', level: 'block', note: '种族歧视' },
+    { regex: '共产党|政府|国家领导人|习近平', level: 'warn', note: '敏感政治话题' }
+  ].forEach(p => {
+    try { const reg = new RegExp(p.regex, 'gi'); const m = content.match(reg); if (m) violations.push({ rule: 'forbidden', level: p.level, note: p.note, hits: m.slice(0, 8) }); } catch (_) {}
+  });
+  // 2 题材内置规则
+  const genreMap = {
+    '玄幻仙侠': [{ regex: '凡人|修仙|灵气复苏|宗门|秘境|金丹|元婴', level: 'suggest', note: '玄幻高频词' }, { regex: '校花|总裁|豪门|选秀', level: 'warn', note: '与玄幻风格冲突的都市元素' }],
+    '都市': [{ regex: '修仙|宗门|金丹|元婴|灵气复苏', level: 'warn', note: '都市题材建议与修仙元素区分' }, { regex: '老总|总裁|豪门|富二代', level: 'suggest', note: '都市爽文高频词' }],
+    '历史军事': [{ regex: '皇帝|将军|朝廷|宦官|诸侯|世家|战功', level: 'suggest', note: '历史军事高频词' }, { regex: '手机|电脑|互联网|高铁|现代', level: 'warn', note: '历史题材避免现代词' }],
+    '恐怖悬疑': [{ regex: '阴森|诡异|诡谲|寂静|冰冷|尸体|血|血腥味', level: 'suggest', note: '恐怖氛围强化词' }, { regex: '哈哈|大笑|开心|欢乐|阳光|温暖|明媚', level: 'warn', note: '温馨词消解恐怖氛围' }],
+    '科幻': [{ regex: '飞船|星舰|机甲|跃迁|曲率|维度|黑洞|量子|基因', level: 'suggest', note: '科幻科技词' }, { regex: '修仙|灵气|宗门|金丹', level: 'warn', note: '科幻避免奇幻元素' }],
+    '女频言情': [{ regex: '心动|拥抱|吻|表白|脸红|心跳|温柔|宠溺', level: 'suggest', note: '言情核心情绪词' }, { regex: '怒吼|怒骂|暴打|血腥|砍|打', level: 'warn', note: '言情注意暴力比例' }]
+  };
+  const project = all.project && project_id && all.project[project_id];
+  const genre = (project && project.genre) || extra_genre || '';
+  if (genre && genreMap[genre]) {
+    for (const p of genreMap[genre]) {
+      try { const reg = new RegExp(p.regex, 'gi'); const m = content.match(reg); if (m) violations.push({ rule: 'genre:' + genre, level: p.level, note: p.note, hits: m.slice(0, 8) }); } catch (_) {}
+    }
+  }
+  // 3 项目额外规则
+  if (project && project.extra_rules && project.extra_rules.length) {
+    for (const r of project.extra_rules) {
+      for (const p of r.patterns || []) {
+        try { const reg = new RegExp(p.regex, 'gi'); const m = content.match(reg); if (m) violations.push({ rule: 'project:' + (r.title || 'project rule'), level: p.level || 'warn', note: p.note || '', hits: m.slice(0, 8) }); } catch (_) {}
+      }
+    }
+  }
+  // 4 自定义
+  for (const r of all.custom || []) {
+    if (r.enabled === false) continue;
+    if (r.project_id && r.project_id !== project_id) continue;
+    for (const p of r.patterns || []) {
+      try { const reg = new RegExp(p.regex, 'gi'); const m = content.match(reg); if (m) violations.push({ rule: r.type + ':' + r.title, level: p.level || 'warn', note: p.note || '', hits: m.slice(0, 8) }); } catch (_) {}
+    }
+  }
+  const blockCount = violations.filter(v => v.level === 'block').length;
+  res.json({ enabled: true, total_violations: violations.length, blocked: blockCount, warned: violations.filter(v => v.level === 'warn').length, suggested: violations.filter(v => v.level === 'suggest').length, violations });
+});
+
+app.put('/api/rules/toggle', (req, res) => {
+  const all = readJSON('rules.json', { custom: [], project: {} });
+  all.enabled = req.body.enabled === true || req.body.enabled === 'true';
+  writeJSON('rules.json', all);
+  res.json({ enabled: all.enabled });
+});
+
+// ============================================================
+// 18. 提示词仓库 (prompts)
+// ============================================================
+app.get('/api/prompts/categories', (req, res) => {
+  res.json([
+    { id: 'anti_ai', label: '去 AI 味' }, { id: 'style', label: '文风控制' },
+    { id: 'dialogue', label: '对话优化' }, { id: 'scene', label: '场景描写' },
+    { id: 'character_binding', label: '角色绑定' }, { id: 'project', label: '作品绑定' },
+    { id: 'generic', label: '其他' }
+  ]);
+});
+
+app.get('/api/prompts', (req, res) => {
+  const all = readJSON('prompts.json', { prompts: [] });
+  let list = all.prompts || [];
+  if (req.query.category) list = list.filter(p => p.category === req.query.category);
+  if (req.query.project_id) list = list.filter(p => p.project_id === req.query.project_id);
+  if (req.query.character_id) list = list.filter(p => p.character_id === req.query.character_id);
+  if (req.query.keyword) {
+    const kw = String(req.query.keyword).toLowerCase();
+    list = list.filter(p => (p.name || '').toLowerCase().includes(kw) || (p.content || '').toLowerCase().includes(kw));
+  }
+  res.json(list.sort((a, b) => (b.priority || 0) - (a.priority || 0)));
+});
+
+app.post('/api/prompts', (req, res) => {
+  const all = readJSON('prompts.json', { prompts: [] });
+  if (!all.prompts) all.prompts = [];
+  const p = {
+    id: 'p_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 5),
+    name: req.body.name || '未命名', category: req.body.category || 'generic',
+    project_id: req.body.project_id || null, character_id: req.body.character_id || null,
+    content: req.body.content || '', tags: req.body.tags || [],
+    priority: req.body.priority ?? 10, enabled: req.body.enabled !== false,
+    createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  };
+  all.prompts.push(p);
+  writeJSON('prompts.json', all);
+  res.status(201).json(p);
+});
+
+app.put('/api/prompts/:id', (req, res) => {
+  const all = readJSON('prompts.json', { prompts: [] });
+  const idx = (all.prompts || []).findIndex(p => p.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: '提示词不存在' });
+  all.prompts[idx] = { ...all.prompts[idx], ...req.body, id: req.params.id, updatedAt: new Date().toISOString() };
+  writeJSON('prompts.json', all);
+  res.json(all.prompts[idx]);
+});
+
+app.delete('/api/prompts/:id', (req, res) => {
+  const all = readJSON('prompts.json', { prompts: [] });
+  all.prompts = (all.prompts || []).filter(p => p.id !== req.params.id);
+  writeJSON('prompts.json', all);
+  res.json({ success: true });
+});
+
+app.post('/api/prompts/batch-import', (req, res) => {
+  const all = readJSON('prompts.json', { prompts: [] });
+  if (!all.prompts) all.prompts = [];
+  const items = (req.body.items || []).map(p => ({
+    id: 'p_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2, 5),
+    name: p.name || '未命名', category: p.category || 'generic',
+    project_id: p.project_id || null, character_id: p.character_id || null,
+    content: p.content || '', tags: p.tags || [], priority: p.priority ?? 10,
+    enabled: p.enabled !== false, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  }));
+  all.prompts.push(...items);
+  writeJSON('prompts.json', all);
+  res.json({ imported: items.length });
+});
+
+app.post('/api/prompts/build-context', (req, res) => {
+  const { project_id, character_ids, categories, top_n } = req.body;
+  const all = readJSON('prompts.json', { prompts: [] });
+  let pool = (all.prompts || []).filter(p => p.enabled !== false);
+  if (project_id) pool = pool.filter(p => !p.project_id || p.project_id === project_id);
+  if (Array.isArray(character_ids) && character_ids.length) pool = pool.filter(p => !p.character_id || character_ids.includes(p.character_id));
+  if (Array.isArray(categories) && categories.length) pool = pool.filter(p => categories.includes(p.category));
+  pool = pool.sort((a, b) => (b.priority || 0) - (a.priority || 0)).slice(0, top_n || 10);
+  const labels = { anti_ai: '去 AI 味', style: '文风控制', dialogue: '对话优化', scene: '场景描写', character_binding: '角色绑定', project: '作品绑定', generic: '通用' };
+  const parts = pool.map(p => `【${labels[p.category] || '其他'} - ${p.name}】\n${p.content}`);
+  res.json({ prompts: pool, context_text: parts.join('\n\n') });
+});
+
+// ============================================================
+// 19. 多模型配置 (models)
+// ============================================================
+app.get('/api/models/meta', (req, res) => res.json({
+  tasks: ['writing', 'polish', 'review', 'embedding', 'summary', 'outline', 'character']
+}));
+
+app.get('/api/models', (req, res) => {
+  const all = readJSON('models.json', { providers: [], tasks: {}, templates: [], fallback_chain: [] });
+  const providers = (all.providers || []).map(p => ({ ...p, api_key: p.api_key ? '****' : null }));
+  res.json({ providers, tasks: all.tasks || [], templates: all.templates || [], fallback_chain: all.fallback_chain || [] });
+});
+
+app.post('/api/models/providers', (req, res) => {
+  const all = readJSON('models.json', { providers: [], tasks: {}, templates: [], fallback_chain: [] });
+  if (!all.providers) all.providers = [];
+  const p = {
+    id: 'pr_' + Date.now().toString(36), name: req.body.name || '未命名',
+    base_url: req.body.base_url || '', api_key: req.body.api_key || '',
+    api_type: req.body.api_type || 'openai-compatible', model: req.body.model || '',
+    enabled: req.body.enabled !== false, priority: req.body.priority || 10,
+    notes: req.body.notes || '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString()
+  };
+  all.providers.push(p);
+  writeJSON('models.json', all);
+  res.status(201).json({ ...p, api_key: p.api_key ? '****' : null });
+});
+
+app.put('/api/models/providers/:id', (req, res) => {
+  const all = readJSON('models.json', { providers: [], tasks: {}, templates: [], fallback_chain: [] });
+  const idx = (all.providers || []).findIndex(p => p.id === req.params.id);
+  if (idx === -1) return res.status(404).json({ error: '供应商不存在' });
+  // 保留原始密钥（若前端传 ****）
+  let newKey = req.body.api_key;
+  if (typeof newKey === 'string' && newKey.includes('****')) newKey = all.providers[idx].api_key;
+  all.providers[idx] = { ...all.providers[idx], ...req.body, id: req.params.id, api_key: newKey !== undefined ? newKey : all.providers[idx].api_key, updatedAt: new Date().toISOString() };
+  writeJSON('models.json', all);
+  res.json({ ...all.providers[idx], api_key: all.providers[idx].api_key ? '****' : null });
+});
+
+app.delete('/api/models/providers/:id', (req, res) => {
+  const all = readJSON('models.json', { providers: [], tasks: {}, templates: [], fallback_chain: [] });
+  all.providers = (all.providers || []).filter(p => p.id !== req.params.id);
+  writeJSON('models.json', all);
+  res.json({ success: true });
+});
+
+app.post('/api/models/tasks', (req, res) => {
+  const all = readJSON('models.json', { providers: [], tasks: {}, templates: [], fallback_chain: [] });
+  if (!Array.isArray(all.tasks)) all.tasks = [];
+  const t = {
+    task: req.body.task || 'writing', provider_id: req.body.provider_id,
+    model: req.body.model || '', temperature: req.body.temperature ?? 0.8,
+    top_p: req.body.top_p ?? 1.0, max_tokens: req.body.max_tokens || 2048,
+    repetition_penalty: req.body.repetition_penalty || 1.0,
+    system_prompt: req.body.system_prompt || ''
+  };
+  all.tasks = all.tasks.filter(x => x.task !== t.task);
+  all.tasks.push(t);
+  writeJSON('models.json', all);
+  res.status(201).json(t);
+});
+
+app.get('/api/models/tasks/:task', (req, res) => {
+  const all = readJSON('models.json', { providers: [], tasks: {}, templates: [], fallback_chain: [] });
+  res.json((all.tasks || []).find(x => x.task === req.params.task) || {});
+});
+
+app.delete('/api/models/tasks/:task', (req, res) => {
+  const all = readJSON('models.json', { providers: [], tasks: {}, templates: [], fallback_chain: [] });
+  all.tasks = (all.tasks || []).filter(x => x.task !== req.params.task);
+  writeJSON('models.json', all);
+  res.json({ success: true });
+});
+
+app.post('/api/models/templates', (req, res) => {
+  const all = readJSON('models.json', { providers: [], tasks: {}, templates: [], fallback_chain: [] });
+  if (!Array.isArray(all.templates)) all.templates = [];
+  const tpl = {
+    id: 'tpl_' + Date.now().toString(36), name: req.body.name || '未命名模板',
+    temperature: req.body.temperature ?? 0.8, top_p: req.body.top_p ?? 1.0,
+    repetition_penalty: req.body.repetition_penalty || 1.0,
+    max_tokens: req.body.max_tokens || 2048, system_prompt: req.body.system_prompt || '',
+    createdAt: new Date().toISOString()
+  };
+  all.templates.push(tpl);
+  writeJSON('models.json', all);
+  res.status(201).json(tpl);
+});
+
+app.delete('/api/models/templates/:id', (req, res) => {
+  const all = readJSON('models.json', { providers: [], tasks: {}, templates: [], fallback_chain: [] });
+  all.templates = (all.templates || []).filter(t => t.id !== req.params.id);
+  writeJSON('models.json', all);
+  res.json({ success: true });
+});
+
+app.put('/api/models/fallback-chain', (req, res) => {
+  const all = readJSON('models.json', { providers: [], tasks: {}, templates: [], fallback_chain: [] });
+  all.fallback_chain = req.body.chain || [];
+  writeJSON('models.json', all);
+  res.json({ fallback_chain: all.fallback_chain });
+});
+
+app.post('/api/models/resolve', (req, res) => {
+  const { task } = req.body;
+  const m = readJSON('models.json', { providers: [], tasks: {}, templates: [], fallback_chain: [] });
+  const taskCfg = (m.tasks || []).find(x => x.task === (task || 'writing'));
+  const providers = (m.providers || []).filter(p => p.enabled !== false);
+  if (taskCfg) {
+    const provider = providers.find(p => p.id === taskCfg.provider_id);
+    if (provider) {
+      return res.json({
+        provider: { ...provider, api_key: provider.api_key ? '****' : null },
+        task_config: taskCfg, available_providers: providers.map(p => p.id),
+        fallback_chain: m.fallback_chain || [],
+        note: '前端调用生成时需自行注入实际 api_key 和 base_url；失败时按 fallback_chain 重试。'
+      });
+    }
+  }
+  const settings = readJSON('settings.json', { settings: {} }).settings || {};
+  res.json({
+    provider: { name: '默认主配置', base_url: settings.apiEndpoint || '', api_type: 'openai-compatible', api_key: settings.apiKey ? '****' : null, model: settings.model || '' },
+    task_config: taskCfg || { task: task || 'writing' },
+    available_providers: providers.map(p => p.id),
+    fallback_chain: m.fallback_chain || [],
+    note: '未配置任务绑定，使用 settings.json 中的主配置；建议在 /models/tasks 配置各任务模型。'
+  });
+});
+
+// ============================================================
+// 20. RAG 三级检索系统 (vector + graph + BM25)
+// ============================================================
+function tokenizeRag(text) {
+  if (!text) return [];
+  const parts = String(text).toLowerCase().split(/[\s,。！？、；：""''（）《》【】…\—\-\/\\.!?;:"'()\[\]<>]+/).filter(Boolean);
+  const out = [];
+  for (const p of parts) {
+    if (/^[a-zA-Z0-9]+$/.test(p)) { out.push(p); continue; }
+    for (let n = 2; n <= 3; n++) for (let i = 0; i + n <= p.length; i++) out.push(p.slice(i, i + n));
+    for (const ch of p) out.push(ch);
+  }
+  return out;
+}
+
+function buildBm25IndexLocal(docs) {
+  const N = docs.length;
+  const docTerms = docs.map(d => tokenizeRag(String(d.title || '') + ' ' + String(d.content || '')));
+  const avgLen = docTerms.reduce((s, t) => s + t.length, 0) / Math.max(1, N);
+  const df = new Map();
+  for (const terms of docTerms) {
+    const seen = new Set(terms);
+    for (const t of seen) df.set(t, (df.get(t) || 0) + 1);
+  }
+  const tf = docTerms.map(terms => {
+    const map = new Map();
+    for (const t of terms) map.set(t, (map.get(t) || 0) + 1);
+    return map;
+  });
+  return { N, avgLen, df, tf, docTerms, docs };
+}
+
+function bm25ScoreLocal(idx, queryTokens, index) {
+  let score = 0;
+  const map = index.tf[idx];
+  const docLen = index.docTerms[idx].length;
+  for (const q of queryTokens) {
+    const f = map.get(q) || 0;
+    if (f === 0) continue;
+    const nq = index.df.get(q) || 0;
+    const idf = Math.log((index.N - nq + 0.5) / (nq + 0.5) + 1);
+    const denom = f + 1.5 * (1 - 0.75 + 0.75 * docLen / Math.max(1, index.avgLen));
+    score += (f * 2.5 * idf) / Math.max(1e-9, denom);
+  }
+  return score;
+}
+
+app.post('/api/rag/retrieve', (req, res) => {
+  const { query, project_id, top_k } = req.body;
+  if (!project_id || !query) return res.status(400).json({ error: 'project_id 和 query 必填' });
+  const materials = (readJSON('materials.json', { materials: [] }).materials || []).filter(m => m.project_id === project_id || m.project_id == null || m.project_id === undefined);
+  const chapters = (readJSON('chapters.json', { chapters: [] }).chapters || []).filter(c => c.project_id === project_id);
+  const characters = (readJSON('characters.json', { characters: [] }).characters || []).filter(c => c.project_id === project_id || c.project_id == null || c.project_id === undefined);
+  const docs = [];
+  for (const m of materials) docs.push({ id: 'mat:' + m.id, title: m.name || '', content: m.content || '', category: m.category || 'setting' });
+  for (const c of chapters) docs.push({ id: 'ch:' + c.id, title: c.title || '', content: (c.summary || '') + ' ' + ((c.content || '').slice(0, 500)), category: 'chapter' });
+  for (const ch of characters) docs.push({ id: 'char:' + ch.id, title: ch.name || '', content: (ch.personality || '') + ' ' + (ch.background || '') + ' ' + (ch.content || ''), category: 'character' });
+  const index = buildBm25IndexLocal(docs);
+  const qTokens = tokenizeRag(query);
+  const scored = [];
+  for (let i = 0; i < index.N; i++) scored.push({ index: i, score: bm25ScoreLocal(i, qTokens, index) });
+  scored.sort((a, b) => b.score - a.score);
+  const topN = Math.min(top_k || 8, scored.length);
+  const results = scored.slice(0, topN).filter(s => s.score > 0).map(s => ({ ...docs[s.index], level: 'bm25', bm25_score: s.score }));
+
+  // Graph 混排（查询时角色/势力做 1 跳扩展）
+  let graphUsed = false;
+  try {
+    const kg = (readJSON('knowledge_graphs.json', { graphs: {} }).graphs || {})[project_id];
+    if (kg && kg.nodes && kg.nodes.length) {
+      const qSet = new Set(qTokens);
+      const hits = kg.nodes
+        .map(n => ({ node: n, overlap: tokenizeRag((n.name || '') + ' ' + (n.summary || '')).filter(t => qSet.has(t)).length }))
+        .filter(x => x.overlap > 0)
+        .sort((a, b) => b.overlap - a.overlap)
+        .slice(0, 5);
+      if (hits.length) {
+        for (const h of hits) results.push({ id: 'graph:' + h.node.id, title: h.node.name, content: h.node.summary, category: h.node.type, level: 'graph', graph_score: h.overlap });
+        graphUsed = true;
+      }
+    }
+  } catch (_) {}
+
+  res.json({
+    level: (graphUsed ? 'graph+bm25' : 'bm25'),
+    used: ['bm25'],
+    query, project_id, top_k: topN,
+    results
+  });
+});
+
+app.post('/api/rag/build-context', async (req, res) => {
+  const { project_id, query, top_k } = req.body;
+  if (!project_id) return res.status(400).json({ error: 'project_id 必填' });
+  // 模拟：直接走 /retrieve 的逻辑
+  const base = 'http://localhost:' + (process.env.PORT || 3001);
+  const ragRaw = await nativePost(base + '/api/rag/retrieve', { query: query || '当前章节故事', project_id, top_k: top_k || 8 }, { timeout: 15000 }).catch(() => null);
+  const rag = ragRaw && ragRaw.data ? ragRaw.data : ragRaw;
+  const parts = [];
+  parts.push('【长篇防崩坏 · 检索上下文注入】');
+  parts.push('检索层级: ' + (rag ? rag.level : 'error') + '（自动融合）');
+  if (rag && rag.results && rag.results.length) {
+    parts.push('\n[相关设定/章节/人物]');
+    rag.results.slice(0, top_k || 8).forEach((r, i) => {
+      parts.push(`#${i + 1} [${r.level}] ${r.title} (${r.category})`);
+      parts.push((r.content || '').slice(0, 600));
+    });
+  }
+  res.json({ text: parts.join('\n'), sources: rag ? rag.results : [], level: rag ? rag.level : 'error' });
+});
+
+// ============================================================
+// 21. 启动服务器
+// ============================================================
+console.log('[Info] 灵墨小说工坊 - 开发版 API 已加载所有模块 (RAG/图谱/伏笔/追读力/规则/提示词/多模型)');
+

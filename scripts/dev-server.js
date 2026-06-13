@@ -3,11 +3,64 @@
  * 在无 Electron 环境下也能启动后端 API
  * 配合 Vite 前端开发服务器使用
  */
-const express = require('express');
-const cors = require('cors');
+const express = (() => { try { return require('express'); } catch(e) { console.error('[错误] express 模块未安装！请先运行: npm install'); process.exit(1); } })();
+const cors = (() => { try { return require('cors'); } catch(e) { console.warn('[警告] cors 模块未安装，将跳过跨域中间件'); return null; } })();
 const path = require('path');
 const fs = require('fs');
+const https = require('https');
+const http = require('http');
+const { URL } = require('url');
 const { v4: uuidv4 } = require('uuid');
+
+// 依赖容错：优先使用 axios，失败时回落到 Node.js 内置 http/https
+let axios = null;
+let useNativeHttp = false;
+try {
+  axios = require('axios');
+} catch (e) {
+  console.warn('[警告] axios 模块未找到，使用 Node.js 内置 https 模块降级运行');
+  useNativeHttp = true;
+}
+
+function nativePost(url, data, options) {
+  return new Promise((resolve, reject) => {
+    try {
+      const parsed = new URL(url);
+      const lib = parsed.protocol === 'https:' ? https : http;
+      const postData = JSON.stringify(data || {});
+      const reqOptions = {
+        hostname: parsed.hostname,
+        port: parsed.port || (parsed.protocol === 'https:' ? 443 : 80),
+        path: parsed.pathname + parsed.search,
+        method: 'POST',
+        headers: Object.assign(
+          { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(postData) },
+          options?.headers || {}
+        ),
+        timeout: options?.timeout || 120000
+      };
+      const req = lib.request(reqOptions, (res) => {
+        let body = '';
+        res.on('data', (chunk) => { body += chunk; });
+        res.on('end', () => {
+          try { resolve({ data: JSON.parse(body || '{}'), status: res.statusCode }); }
+          catch (e) { resolve({ data: body, status: res.statusCode }); }
+        });
+      });
+      req.on('error', reject);
+      req.on('timeout', () => { req.destroy(new Error('请求超时')); });
+      req.write(postData);
+      req.end();
+    } catch (err) { reject(err); }
+  });
+}
+
+function httpPost(url, data, options) {
+  if (axios && !useNativeHttp) {
+    return axios.post(url, data, { headers: options?.headers || {}, timeout: options?.timeout || 120000 });
+  }
+  return nativePost(url, data, options);
+}
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -33,7 +86,7 @@ Object.entries(defaultData).forEach(([name, content]) => {
   }
 });
 
-app.use(cors());
+if (cors) app.use(cors());
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
@@ -306,8 +359,7 @@ app.post('/api/generators/generate', async (req, res) => {
     const temperature = params?.temperature ?? gen?.defaultParams?.temperature ?? settings.temperature ?? 0.8;
     const maxTokens = params?.maxTokens ?? gen?.defaultParams?.maxTokens ?? settings.maxTokens ?? 2000;
 
-    const { default: axios } = await import('axios');
-    const response = await axios.post(endpoint, {
+    const response = await httpPost(endpoint, {
       model,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -405,8 +457,7 @@ app.post('/api/outline/complete', async (req, res) => {
     return res.status(400).json({ error: '请先在设置中配置 AI API 密钥和地址' });
   }
   try {
-    const { default: axios } = await import('axios');
-    const response = await axios.post(
+    const response = await httpPost(
       settings.apiEndpoint,
       {
         model: settings.model || 'gpt-4',
@@ -451,9 +502,8 @@ app.post('/api/outline/merge', async (req, res) => {
   const settings = readJSON(path.join(DATA_DIR, 'settings.json'), { settings: {} }).settings || {};
   if (!settings.apiKey || !settings.apiEndpoint) return res.status(400).json({ error: '请先在设置中配置 AI API' });
   try {
-    const { default: axios } = await import('axios');
     const combined = outlines.map((o, i) => `大纲${i + 1}：\n${typeof o === 'string' ? o : o.content || ''}`).join('\n\n---\n\n');
-    const response = await axios.post(
+    const response = await httpPost(
       settings.apiEndpoint,
       {
         model: settings.model || 'gpt-4',

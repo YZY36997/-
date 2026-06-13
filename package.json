@@ -25,6 +25,7 @@
     "doctor": "node scripts/doctor.js",
     "clean": "node scripts/clean.js",
     "clean:deep": "node scripts/clean.js --deep",
+    "download:electron": "node scripts/download-electron.cjs",
     "install:cn": "npm config set registry https://registry.npmmirror.com && npx cross-env ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm install --legacy-peer-deps",
     "install:all": "npx cross-env ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/ npm install --legacy-peer-deps",
     "reinstall": "node scripts/clean.js --deep && npm install --legacy-peer-deps"

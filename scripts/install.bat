@@ -56,11 +56,22 @@ if errorlevel 1 (
     echo   ✓ 依赖安装完成！
     echo ============================================
     echo.
+    echo   [可选] 手动下载 Electron (加速打包):
+    echo     node scripts\download-electron.cjs
+    echo.
     echo   下一步:
     echo     scripts\dev.bat     启动开发服务器
     echo     scripts\build.bat   构建前端
     echo     scripts\pack.bat    打包 Windows EXE
+    echo.
+    echo   环境诊断:
+    echo     node scripts\doctor.js
 )
+
+echo.
+echo   运行环境诊断...
+node scripts\doctor.js
+echo.
 
 echo.
 pause

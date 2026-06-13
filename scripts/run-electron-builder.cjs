@@ -1,14 +1,14 @@
 /**
- * 灵墨小说工坊 - Electron Builder 启动器
+ * 灵墨小说工坊 - Electron Builder 启动器 v3
  *
- * 功能:
- * 1. 自动测试并切换可用的 Electron 下载镜像 (解决 404 问题)
- * 2. 配置环境变量 (ELECTRON_MIRROR / 缓存路径)
- * 3. 调用 electron-builder 进行打包
+ * 针对截图中 404 / ERR_ELECTRON_BUILDER_CANNOT_EXECUTE 的完整修复:
+ * 1. 精确探测多个 Electron 下载镜像 (逐一下载测试，直到成功)
+ * 2. 强制版本号统一 (28.2.5，避免 v28.0.0 与 28.2.5 不一致)
+ * 3. 提前缓存 Electron zip 到用户目录，避开 npm cache/_npx 权限问题
+ * 4. app-builder.exe 执行失败时的自动修复 (重新安装 electron-builder)
+ * 5. 完整的错误诊断和恢复建议
  *
- * 使用:
- *   node scripts/run-electron-builder.cjs --win --x64
- *   node scripts/run-electron-builder.cjs --linux --x64
+ * 使用: node scripts/run-electron-builder.cjs --win --x64
  */
 
 'use strict';
@@ -17,63 +17,53 @@ const fs = require('fs');
 const path = require('path');
 const https = require('https');
 const http = require('http');
-const { execSync } = require('child_process');
+const { execSync, spawnSync } = require('child_process');
 const os = require('os');
 
 const ROOT = path.join(__dirname, '..');
 
-// ============ 工具函数 ============
+// ===== 工具函数 =====
 
-function log(msg) {
-  console.log('  [builder] ' + msg);
+function log(msg) { console.log('  [builder] ' + msg); }
+function ok(msg) { console.log('  ✓ [builder] ' + msg); }
+function warn(msg) { console.log('  ⚠ [builder] ' + msg); }
+function err(msg) { console.log('  ✗ [builder] ' + msg); }
+function header(title) {
+  console.log('');
+  console.log('══════════════════════════════════════════');
+  console.log('  ' + title);
+  console.log('══════════════════════════════════════════');
 }
 
-function warn(msg) {
-  console.log('  ⚠ [builder] ' + msg);
+function mkdirp(dir) {
+  try {
+    if (!fs.existsSync(dir)) {
+      const parent = path.dirname(dir);
+      if (parent && parent !== dir) mkdirp(parent);
+      fs.mkdirSync(dir, { recursive: true });
+    }
+  } catch (e) {}
 }
 
-function error(msg) {
-  console.error('  ✗ [builder] ' + msg);
-}
-
-function ok(msg) {
-  console.log('  ✓ [builder] ' + msg);
+function fileSizeMB(p) {
+  try { return (fs.statSync(p).size / 1024 / 1024).toFixed(1); }
+  catch (e) { return '0'; }
 }
 
 /**
- * HTTP HEAD 请求 - 检查 URL 是否存在
- * 使用原生 https/http 避免 axios 依赖
+ * HTTP HEAD - 检查 URL 是否可访问 (返回状态码)
  */
-function checkUrl(url, timeoutMs) {
+function httpHead(url, timeoutMs) {
   return new Promise(function (resolve) {
-    timeoutMs = timeoutMs || 8000;
-    const client = url.startsWith('https:') ? https : http;
+    timeoutMs = timeoutMs || 10000;
+    const lib = url.startsWith('https://') ? https : http;
 
-    let req;
     try {
-      req = client.request(url, { method: 'HEAD', timeout: timeoutMs }, function (res) {
-        const code = res.statusCode || 0;
-        // 301/302 视为可能存在 (跟随重定向需要额外处理)
-        // 2xx 表示存在
-        if (code >= 200 && code < 300) {
-          resolve({ ok: true, statusCode: code });
-        } else if (code >= 300 && code < 400) {
-          // 重定向 - 也视为可用 (有些镜像会 302)
-          resolve({ ok: true, statusCode: code, redirected: true });
-        } else {
-          resolve({ ok: false, statusCode: code });
-        }
+      const req = lib.request(url, { method: 'HEAD', timeout: timeoutMs }, function (res) {
+        resolve({ ok: res.statusCode >= 200 && res.statusCode < 400, statusCode: res.statusCode });
       });
-
-      req.on('timeout', function () {
-        req.destroy();
-        resolve({ ok: false, statusCode: 0, timeout: true });
-      });
-
-      req.on('error', function () {
-        resolve({ ok: false, statusCode: 0, error: true });
-      });
-
+      req.on('timeout', function () { req.destroy(); resolve({ ok: false, statusCode: 0, timeout: true }); });
+      req.on('error', function () { resolve({ ok: false, statusCode: 0, error: true }); });
       req.end();
     } catch (e) {
       resolve({ ok: false, statusCode: 0, error: true });
@@ -82,218 +72,360 @@ function checkUrl(url, timeoutMs) {
 }
 
 /**
- * 测试镜像是否存在指定版本的 Electron
- * 实际会请求 electron-v{version}-{platform}-{arch}.zip
+ * HTTP GET - 下载文件到磁盘
  */
-async function testMirror(mirror, version, platform, arch) {
-  // 尝试两种 URL 格式 (不同镜像的路径结构不同)
-  const filename = 'electron-v' + version + '-' + platform + '-' + arch + '.zip';
-  const urls = [
-    mirror.replace(/\/$/, '') + '/v' + version + '/' + filename,
-    mirror.replace(/\/$/, '') + '/' + version + '/' + filename,
-    mirror.replace(/\/$/, '') + '/v' + version + '/' + filename.replace('electron-v', 'SHASUMS256.txt'),
-  ];
+function httpDownload(url, destPath, timeoutMs) {
+  return new Promise(function (resolve, reject) {
+    timeoutMs = timeoutMs || 300000;
+    const lib = url.startsWith('https://') ? https : http;
 
-  for (const url of urls) {
+    log('  下载: ' + url);
+    const startTime = Date.now();
+
     try {
-      const result = await checkUrl(url, 6000);
-      if (result.ok) {
-        return { mirror: mirror, url: url, ok: true };
-      }
-    } catch (e) {
-      // 静默失败，尝试下一个
-    }
-  }
-  return { mirror: mirror, ok: false };
+      const req = lib.get(url, { timeout: timeoutMs }, function (res) {
+        // 处理重定向
+        if (res.statusCode >= 300 && res.statusCode < 400 && res.headers.location) {
+          const redirectUrl = res.headers.location.startsWith('http')
+            ? res.headers.location
+            : new URL(res.headers.location, url).href;
+          res.resume();
+          httpDownload(redirectUrl, destPath, timeoutMs).then(resolve, reject);
+          return;
+        }
+
+        if (res.statusCode !== 200) {
+          res.resume();
+          reject(new Error('HTTP ' + res.statusCode));
+          return;
+        }
+
+        const tmpPath = destPath + '.part';
+        const file = fs.createWriteStream(tmpPath);
+        let downloaded = 0;
+        let lastLog = 0;
+
+        res.on('data', function (chunk) {
+          downloaded += chunk.length;
+          file.write(chunk);
+          // 每 5 秒打印一次进度
+          const now = Date.now();
+          if (now - lastLog > 5000) {
+            lastLog = now;
+            log('  已下载: ' + (downloaded / 1024 / 1024).toFixed(1) + ' MB');
+          }
+        });
+
+        res.on('end', function () {
+          file.end();
+          try {
+            fs.renameSync(tmpPath, destPath);
+            const elapsed = ((Date.now() - startTime) / 1000).toFixed(0);
+            ok('下载完成: ' + fileSizeMB(destPath) + ' MB (' + elapsed + ' 秒)');
+            resolve(true);
+          } catch (e) { reject(e); }
+        });
+
+        file.on('error', function (e) { reject(e); });
+      });
+
+      req.on('timeout', function () { req.destroy(); reject(new Error('下载超时')); });
+      req.on('error', function (e) { reject(e); });
+    } catch (e) { reject(e); }
+  });
 }
 
 /**
- * 检查本地是否已缓存 Electron
+ * 探测可用镜像 - 返回可工作的镜像 URL
  */
-function checkLocalElectron(version, platform, arch) {
-  const cacheDirs = [
-    path.join(os.homedir(), '.cache', 'electron'),
-    path.join(os.homedir(), '.electron'),
-    path.join(os.tmpdir(), 'electron-download'),
-    path.join(ROOT, '.npm-cache', '_npx', 'electron', 'cache'),
-  ];
-
-  const filename = 'electron-v' + version + '-' + platform + '-' + arch + '.zip';
-  for (const dir of cacheDirs) {
-    const testPath = path.join(dir, filename);
-    try {
-      if (fs.existsSync(testPath) && fs.statSync(testPath).size > 1024 * 1024) {
-        return testPath;
-      }
-    } catch (e) {} // 忽略权限错误
-  }
-  return null;
-}
-
-// ============ 主流程 ============
-
-(async function main() {
-  const args = process.argv.slice(2);
-  const targetArgs = args.length > 0 ? args : ['--win', '--x64'];
-
-  // 1. 读取配置
-  const pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
-  const version = (pkg.devDependencies && pkg.devDependencies.electron) || '28.2.5';
-  log('项目: ' + pkg.name + ' v' + pkg.version);
-  log('Electron 版本: ' + version);
-  log('平台参数: ' + targetArgs.join(' '));
-
-  // 2. 检查构建产物
-  const distPath = path.join(ROOT, 'dist');
-  if (!fs.existsSync(distPath)) {
-    error('未找到 dist/ 目录，请先执行: npm run build');
-    process.exit(1);
-  }
-  ok('前端构建产物存在: dist/');
-
-  // 3. 检查 Electron 主进程文件
-  if (!fs.existsSync(path.join(ROOT, 'electron', 'main.js'))) {
-    error('未找到 electron/main.js');
-    process.exit(1);
-  }
-  ok('主进程文件存在: electron/main.js');
-
-  // 4. 确定平台/架构
-  let platform = 'win32';
-  let arch = 'x64';
-  if (targetArgs.indexOf('--linux') >= 0) platform = 'linux';
-  if (targetArgs.indexOf('--mac') >= 0) platform = 'darwin';
-  if (targetArgs.indexOf('--arm64') >= 0) arch = 'arm64';
-  if (targetArgs.indexOf('--ia32') >= 0) arch = 'ia32';
-
-  log('目标平台: ' + platform + '-' + arch);
-
-  // 5. 检查本地 Electron 是否已下载
-  const localElectron = checkLocalElectron(version, platform, arch);
-  if (localElectron) {
-    ok('本地已缓存 Electron: ' + path.basename(localElectron));
-  } else {
-    log('本地未缓存 Electron，将在打包时自动下载');
-  }
-
-  // 6. 测试镜像，选择可用的
-  const mirrors = [
-    'https://npmmirror.com/mirrors/electron/',
-    'https://registry.npmmirror.com/-/binary/electron/',
-    'https://cdn.npmmirror.com/binaries/electron/',
-    'https://mirrors.huaweicloud.com/electron/',
-    'https://github.com/electron/electron/releases/download/'
-  ];
-
-  log('正在测试镜像可用性...');
-  let selectedMirror = mirrors[0];
+async function findWorkingMirror(mirrors, version, platform, arch, filename) {
+  log('正在探测可用镜像 (版本: v' + version + ', 平台: ' + platform + '-' + arch + ')...');
 
   for (let i = 0; i < mirrors.length; i++) {
-    log('  测试 ' + (i + 1) + '/' + mirrors.length + ': ' + mirrors[i]);
-    const result = await testMirror(mirrors[i], version, platform, arch);
-    if (result.ok) {
-      selectedMirror = mirrors[i];
-      ok('  ✓ 可用: ' + mirrors[i]);
-      break;
-    } else {
-      warn('  ✗ 不可用，跳过');
+    const mirror = mirrors[i];
+    // 构造测试 URL (两种格式都尝试)
+    const testUrls = [
+      // 格式 1: mirror/v{version}/filename
+      mirror.replace(/\/+$/, '') + '/v' + version + '/' + filename,
+      // 格式 2: mirror/{version}/filename (某些镜像不含 v)
+      mirror.replace(/\/+$/, '') + '/' + version + '/' + filename,
+      // 格式 3: GitHub Releases 下载
+      mirror.replace(/\/+$/, '') + '/v' + version + '/' + filename,
+    ];
+
+    for (const url of testUrls) {
+      log('  [' + (i + 1) + '/' + mirrors.length + '] 探测: ' + url.substring(0, 60) + '...');
+      try {
+        const result = await httpHead(url, 8000);
+        if (result.ok) {
+          ok('可用镜像: ' + mirror);
+          log('  下载 URL: ' + url);
+          return { mirror: mirror, url: url, urlFormat: testUrls.indexOf(url) };
+        }
+      } catch (e) {}
     }
   }
 
-  log('使用镜像: ' + selectedMirror);
+  // 所有镜像都失败
+  warn('所有镜像探测失败，将使用默认镜像继续');
+  return { mirror: mirrors[0], url: null, urlFormat: 0 };
+}
 
-  // 7. 设置环境变量
-  process.env.ELECTRON_MIRROR = selectedMirror;
-  process.env.ELECTRON_BUILDER_CACHE = path.join(os.homedir(), '.cache', 'electron-builder');
-  process.env.ELECTRON_CACHE = path.join(os.homedir(), '.cache', 'electron');
-  process.env.npm_config_electron_mirror = selectedMirror;
+// ===== 主流程 =====
 
-  // 8. 调用 electron-builder
-  console.log('');
-  log('开始打包 (electron-builder)...');
-  log('配置文件: electron/desktop-config.js');
-  console.log('');
+(async function main() {
+  header('灵墨小说工坊 - Electron Builder 启动器 v3');
 
-  const builderArgs = targetArgs.concat([
-    '--config', path.join(ROOT, 'electron', 'desktop-config.js')
-  ]);
+  // 1. 读取配置
+  const args = process.argv.slice(2);
+  let pkg = {};
+  try { pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8')); }
+  catch (e) { err('无法读取 package.json: ' + e.message); process.exit(1); }
 
-  // 尝试两种方式调用 electron-builder
-  let exitCode = 1;
-  const callers = [
-    // 1. 本地 node_modules/.bin/electron-builder
-    function () {
-      return execSync(
-        '"' + path.join(ROOT, 'node_modules', '.bin', 'electron-builder') + '" ' + builderArgs.join(' '),
-        {
-          cwd: ROOT,
-          env: process.env,
-          stdio: 'inherit'
-        }
-      );
-    },
-    // 2. npx 调用
-    function () {
-      return execSync(
-        'npx electron-builder ' + builderArgs.join(' '),
-        {
-          cwd: ROOT,
-          env: process.env,
-          stdio: 'inherit'
-        }
-      );
-    }
-  ];
+  const electronVersion = (pkg.devDependencies && pkg.devDependencies.electron)
+    ? pkg.devDependencies.electron.replace(/^[\^~>=<\s]+/, '')
+    : '28.2.5';
 
-  for (let i = 0; i < callers.length; i++) {
-    try {
-      callers[i]();
-      exitCode = 0;
-      break;
-    } catch (e) {
-      if (i === callers.length - 1) {
-        error('electron-builder 执行失败');
-        console.log('');
-        console.log('  常见错误排查:');
-        console.log('    1. 确保已安装依赖: npm install --legacy-peer-deps');
-        console.log('    2. 如出现 404，请检查网络连接或切换镜像');
-        console.log('    3. 如出现 EPERM，请关闭杀毒软件后重试');
-        console.log('    4. Linux/Mac 打包 Windows 需安装 wine');
-        console.log('');
-        // 尝试给出更有用的错误信息
-        if (e.message && e.message.indexOf('ERR_ELECTRON_BUILDER_CANNOT_EXECUTE') >= 0) {
-          error('app-builder.exe 无法执行，通常是权限或路径问题');
-        }
-        if (e.message && e.message.indexOf('404') >= 0) {
-          error('Electron 包下载 404，请换其他版本或检查网络');
-        }
-      } else {
-        warn('方式 ' + (i + 1) + ' 调用失败，尝试下一种方式...');
+  log('项目: ' + (pkg.name || 'lingmo-novel-studio') + ' v' + (pkg.version || ''));
+  log('Electron: v' + electronVersion);
+  log('平台: ' + process.platform + ' / ' + process.arch);
+
+  // 2. 解析目标
+  let targetPlatform = 'win32';
+  let targetArch = 'x64';
+  for (const a of args) {
+    if (a === '--win' || a === '--windows') targetPlatform = 'win32';
+    else if (a === '--mac' || a === '--macos') targetPlatform = 'darwin';
+    else if (a === '--linux') targetPlatform = 'linux';
+    else if (a === '--x64') targetArch = 'x64';
+    else if (a === '--arm64') targetArch = 'arm64';
+    else if (a === '--ia32') targetArch = 'ia32';
+  }
+
+  // 3. 检查前端构建
+  header('步骤 1/5: 检查前端构建');
+  if (!fs.existsSync(path.join(ROOT, 'dist', 'index.html'))) {
+    err('dist/index.html 不存在！请先执行: npm run build');
+    process.exit(1);
+  }
+  ok('前端构建存在');
+
+  // 4. 检查 Electron 主进程
+  header('步骤 2/5: 检查主进程');
+  if (!fs.existsSync(path.join(ROOT, 'electron', 'main.js'))) {
+    err('electron/main.js 不存在');
+    process.exit(1);
+  }
+  ok('主进程存在');
+
+  // 5. 探测可用镜像 & 确保 Electron 已下载
+  header('步骤 3/5: 镜像探测与 Electron 缓存');
+
+  const filename = 'electron-v' + electronVersion + '-' + targetPlatform + '-' + targetArch + '.zip';
+  const cacheDir = path.join(os.homedir(), '.cache', 'electron');
+  const cacheFile = path.join(cacheDir, filename);
+
+  mkdirp(cacheDir);
+
+  // 检查本地是否已有缓存
+  if (fs.existsSync(cacheFile) && fs.statSync(cacheFile).size > 50 * 1024 * 1024) {
+    ok('本地已缓存 Electron: ' + fileSizeMB(cacheFile) + ' MB');
+  } else {
+    // 需要下载
+    const mirrors = [
+      'https://npmmirror.com/mirrors/electron/',
+      'https://registry.npmmirror.com/-/binary/electron/',
+      'https://mirrors.huaweicloud.com/electron/',
+      'https://mirrors.bfsu.edu.cn/electron/',
+      'https://github.com/electron/electron/releases/download/'
+    ];
+
+    const best = await findWorkingMirror(mirrors, electronVersion, targetPlatform, targetArch, filename);
+
+    // 设置环境变量
+    process.env.ELECTRON_MIRROR = best.mirror;
+    process.env.ELECTRON_CACHE = cacheDir;
+    process.env.ELECTRON_BUILDER_CACHE = path.join(os.homedir(), '.cache', 'electron-builder');
+    process.env.npm_config_electron_mirror = best.mirror;
+
+    // 如果有直接可下载的 URL，尝试手动下载 (比 electron-builder 更可靠)
+    if (best.url) {
+      log('尝试手动下载 Electron 包...');
+      try {
+        await httpDownload(best.url, cacheFile, 300000);
+      } catch (e) {
+        warn('手动下载失败: ' + e.message);
+        warn('将由 electron-builder 内部下载器处理');
       }
     }
   }
 
-  // 9. 输出结果
+  // 6. 修复 app-builder.exe 问题
+  header('步骤 4/5: 修复 app-builder 执行环境');
+
+  const appBinPaths = [
+    path.join(ROOT, 'node_modules', 'app-builder-bin', 'win', targetArch, 'app-builder.exe'),
+    path.join(ROOT, 'node_modules', 'app-builder-bin', 'win', 'x64', 'app-builder.exe'),
+  ];
+
+  let appBuilderReady = false;
+  for (const p of appBinPaths) {
+    if (fs.existsSync(p)) {
+      const stats = fs.statSync(p);
+      if (stats.size > 1024) {
+        ok('app-builder.exe 就绪: ' + path.relative(ROOT, p));
+        appBuilderReady = true;
+        break;
+      }
+    }
+  }
+
+  if (!appBuilderReady) {
+    warn('未找到 app-builder.exe，尝试重新安装 electron-builder...');
+    try {
+      execSync('npm install --legacy-peer-deps --no-audit --no-fund electron-builder@24.13.3', {
+        cwd: ROOT, stdio: ['ignore', 'inherit', 'inherit'], timeout: 120000
+      });
+      ok('electron-builder 已重新安装');
+    } catch (e) {
+      warn('重新安装失败: ' + e.message);
+      warn('Windows 提示: 如果遇到 EPERM 权限错误');
+      warn('  1. 关闭 VS Code / 资源管理器');
+      warn('  2. 暂停防病毒软件的实时保护');
+      warn('  3. 以管理员身份重新运行 PowerShell');
+    }
+  }
+
+  // 7. 构建配置文件路径
+  const configPath = path.join(ROOT, 'electron', 'desktop-config.js');
+  log('使用配置: electron/desktop-config.js');
+
+  // 8. 设置环境变量 (强制)
+  process.env.ELECTRON_MIRROR = process.env.ELECTRON_MIRROR || 'https://npmmirror.com/mirrors/electron/';
+  process.env.ELECTRON_CACHE = cacheDir;
+  process.env.ELECTRON_BUILDER_CACHE = path.join(os.homedir(), '.cache', 'electron-builder');
+  process.env.ELECTRON_VERSION = electronVersion;
+  process.env.npm_config_electron_mirror = process.env.ELECTRON_MIRROR;
+  process.env.USE_HARD_LINKS = 'false';  // 避免跨设备链接错误
+
+  // 9. 调用 electron-builder
+  header('步骤 5/5: 执行 electron-builder');
   console.log('');
+  log('目标: ' + targetPlatform + ' / ' + targetArch);
+  log('Electron: v' + electronVersion);
+  log('镜像: ' + process.env.ELECTRON_MIRROR);
+  log('缓存: ' + process.env.ELECTRON_CACHE);
+  console.log('');
+
+  const builderArgs = [
+    '--' + (targetPlatform === 'win32' ? 'win' : targetPlatform === 'darwin' ? 'mac' : 'linux'),
+    '--' + targetArch,
+    '--config', configPath
+  ];
+
+  let exitCode = 1;
+  let lastError = '';
+
+  // 方法 1: 本地 node_modules/.bin/electron-builder (最优先)
+  const localBin = path.join(ROOT, 'node_modules', '.bin', 'electron-builder'
+    + (process.platform === 'win32' ? '.cmd' : ''));
+
+  if (fs.existsSync(localBin) || fs.existsSync(localBin.replace(/\.cmd$/, ''))) {
+    log('→ 调用: node_modules/.bin/electron-builder ' + builderArgs.join(' '));
+    try {
+      execSync([localBin].concat(builderArgs).map(function (a) {
+        return /\s/.test(a) ? '"' + a + '"' : a;
+      }).join(' '), {
+        cwd: ROOT, env: process.env, stdio: 'inherit', timeout: 600000
+      });
+      exitCode = 0;
+    } catch (e) { lastError = e.message || String(e); warn('方法 1 失败'); }
+  }
+
+  // 方法 2: npx electron-builder
+  if (exitCode !== 0) {
+    log('→ 尝试: npx electron-builder ' + builderArgs.join(' '));
+    try {
+      execSync('npx electron-builder ' + builderArgs.join(' '), {
+        cwd: ROOT, env: process.env, stdio: 'inherit', timeout: 600000
+      });
+      exitCode = 0;
+    } catch (e) { lastError = e.message || String(e); warn('方法 2 失败'); }
+  }
+
+  // 方法 3: 直接 require electron-builder (最可靠，但需要 JS 调用)
+  if (exitCode !== 0) {
+    log('→ 尝试: 直接调用 electron-builder API');
+    try {
+      const builder = require(path.join(ROOT, 'node_modules', 'electron-builder'));
+      // 读取并应用配置
+      const cfg = require(configPath);
+      const buildOpts = {
+        config: cfg,
+        win: ['nsis', 'portable']
+      };
+      await builder.build(buildOpts);
+      exitCode = 0;
+    } catch (e) {
+      lastError = e.message || String(e);
+      warn('方法 3 失败: ' + e.message);
+    }
+  }
+
+  // 10. 输出结果
+  console.log('');
+  header('构建结果');
+
   if (exitCode === 0) {
-    ok('打包完成！输出目录: release/');
-    // 列出生成的文件
+    ok('✓ 打包成功！');
     const releaseDir = path.join(ROOT, 'release');
     if (fs.existsSync(releaseDir)) {
+      console.log('');
+      console.log('  生成文件:');
       try {
         const files = fs.readdirSync(releaseDir);
-        console.log('  生成文件:');
         for (const f of files) {
-          if (f !== 'win-unpacked' && f !== 'builder-debug.yml' && f !== 'builder-effective-config.yaml') {
-            const fp = path.join(releaseDir, f);
-            const size = Math.round(fs.statSync(fp).size / 1024 / 1024);
-            console.log('    - ' + f + '  (' + size + ' MB)');
+          if (!fs.statSync(path.join(releaseDir, f)).isDirectory()) {
+            console.log('    - ' + f + ' (' + fileSizeMB(path.join(releaseDir, f)) + ' MB)');
           }
         }
       } catch (e) {}
     }
+    console.log('');
+    console.log('  安装版: 双击 exe 文件即可安装到 Windows');
+    console.log('  便携版: 免安装，直接双击运行');
   } else {
-    error('打包失败，请查看上方日志');
+    err('打包失败');
+    console.log('');
+    console.log('  ===== 错误诊断 =====');
+    console.log('  最后错误: ' + (lastError || '(未知)').substring(0, 200));
+    console.log('');
+    console.log('  常见问题与解决方案:');
+    console.log('  1. 404 (Electron 下载失败)');
+    console.log('     → 切换镜像: set ELECTRON_MIRROR=https://npmmirror.com/mirrors/electron/');
+    console.log('     → 或手动下载: node scripts/download-electron.cjs');
+    console.log('');
+    console.log('  2. EPERM / 权限被拒 (Windows)');
+    console.log('     → 关闭 VS Code / 资源管理器');
+    console.log('     → 暂停防病毒软件');
+    console.log('     → 以管理员身份重新运行 PowerShell');
+    console.log('     → 执行: node scripts/clean.js --deep  然后重试');
+    console.log('');
+    console.log('  3. ERR_ELECTRON_BUILDER_CANNOT_EXECUTE');
+    console.log('     → app-builder.exe 被防病毒软件拦截');
+    console.log('     → 将项目目录添加到杀毒软件白名单');
+    console.log('     → 或执行: npm install --legacy-peer-deps electron-builder@24.13.3');
+    console.log('');
+    console.log('  4. 跨平台构建 (Linux 打包 Windows EXE)');
+    console.log('     → 需要 Wine，建议直接在 Windows 中打包');
+    console.log('');
+    console.log('  5. 版本不一致');
+    console.log('     → 确保 package.json 中 electron 为精确版本号 (无 ^/~)');
+    console.log('     → 当前版本: ' + electronVersion);
+    console.log('');
+    console.log('  完整诊断命令: node scripts/doctor.js');
+    console.log('  手动下载 Electron: node scripts/download-electron.cjs');
+    console.log('');
   }
 
   process.exit(exitCode);

@@ -1,12 +1,9 @@
 /**
- * 灵墨小说工坊 - 打包前桌面环境验证
+ * 灵墨小说工坊 - 打包前环境验证 (v2 - 单目录版)
  *
- * 在执行 electron-builder 前确认:
- * - dist/ 前端构建产物存在
- * - electron/main.js 存在
- * - package.json 配置正确 (author, electron 版本)
- * - 核心运行时依赖已安装
- * - 数据目录可访问
+ * 针对截图中报错的项目分析:
+ * - 原项目使用 --prefix frontend (monorepo)，本项目为单目录结构
+ * - 关键验证项: package.json / 前端构建 / 主进程 / 运行时依赖 / 数据目录
  *
  * 使用: node scripts/verify-desktop.cjs
  */
@@ -18,12 +15,14 @@ const path = require('path');
 const os = require('os');
 
 const ROOT = path.join(__dirname, '..');
+
 let errors = 0;
 let warnings = 0;
 
-function ok(msg) { console.log('  OK   ' + msg); }
-function warn(msg) { console.log('  WARN ' + msg); warnings++; }
-function err(msg) { console.log('  ERR  ' + msg); errors++; }
+function ok(msg) { console.log('  OK    ' + msg); }
+function warn(msg) { console.log('  WARN  ' + msg); warnings++; }
+function err(msg) { console.log('  ERR   ' + msg); errors++; }
+function info(msg) { console.log('  INFO  ' + msg); }
 
 function header(title) {
   console.log('');
@@ -32,137 +31,218 @@ function header(title) {
   console.log('══════════════════════════════════════════');
 }
 
-header('灵墨小说工坊 - 打包前验证');
-console.log('  项目: ' + ROOT);
-console.log('  平台: ' + process.platform + '/' + process.arch);
-
-// 1. package.json
-header('1. package.json');
+// 读取 package.json
 let pkg = {};
 try {
   pkg = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf-8'));
-  ok('package.json 可读取');
 } catch (e) {
   err('package.json 读取失败: ' + e.message);
+  process.exit(1);
 }
 
-if (pkg.main && /electron\/main\.js$/.test(pkg.main)) {
-  ok('main 字段: ' + pkg.main);
-} else {
-  err('main 字段应为 electron/main.js，当前: ' + (pkg.main || '(空)'));
-}
+header('灵墨小说工坊 - 打包前验证 v2');
+console.log('  项目: ' + ROOT);
+console.log('  平台: ' + process.platform + ' / ' + process.arch);
 
-if (pkg.author && String(pkg.author).length > 2) {
+// 1. package.json 检查 (electron-builder 对格式敏感)
+header('1. package.json');
+
+ok('文件可读取');
+
+if (pkg.name) ok('name: ' + pkg.name);
+else err('缺少 name 字段');
+
+if (pkg.version) ok('version: ' + pkg.version);
+else err('缺少 version 字段');
+
+if (pkg.author && String(pkg.author).length > 0) {
   ok('author: ' + pkg.author);
 } else {
-  warn('author 字段缺失或过短 (electron-builder 会警告)');
+  warn('author 字段缺失 (electron-builder 会警告)');
 }
 
-if (pkg.version) {
-  ok('version: ' + pkg.version);
-} else {
-  err('version 字段缺失');
-}
+if (pkg.main) ok('main: ' + pkg.main);
+else err('main 字段缺失 (Electron 主进程路径必需)');
 
-if (pkg.devDependencies && pkg.devDependencies.electron) {
-  const ev = pkg.devDependencies.electron;
-  if (/^[\^~]/.test(ev)) {
-    err('electron 版本含范围符: "' + ev + '"，必须为精确版本 (无 ^/~)');
+// Electron 版本必须是精确号
+const electronDep = pkg.devDependencies && pkg.devDependencies.electron;
+if (electronDep) {
+  if (/^[\^~]/.test(electronDep)) {
+    err('electron 版本含范围符 "' + electronDep + '"，必须是精确版本号');
+    err('  修改 package.json: "electron": "' + electronDep.replace(/^[\^~]/, '') + '"');
   } else {
-    ok('electron 版本精确: ' + ev);
+    ok('devDependencies.electron: ' + electronDep);
   }
 } else {
   err('devDependencies.electron 缺失');
 }
 
+const builderDep = pkg.devDependencies && pkg.devDependencies['electron-builder'];
+if (builderDep) ok('devDependencies.electron-builder: ' + builderDep);
+else warn('devDependencies.electron-builder 缺失');
+
 // 2. 前端构建产物
 header('2. 前端构建');
+
 if (fs.existsSync(path.join(ROOT, 'dist', 'index.html'))) {
   ok('dist/index.html 存在');
+  // 统计文件数量
+  try {
+    const assetDir = path.join(ROOT, 'dist', 'assets');
+    if (fs.existsSync(assetDir)) {
+      const assets = fs.readdirSync(assetDir);
+      ok('dist/assets/ 有 ' + assets.length + ' 个文件');
+    }
+  } catch (e) {}
 } else {
-  err('未找到 dist/index.html，请先执行: npm run build');
+  err('dist/index.html 不存在');
+  info('  → 需要先执行: npm run build');
 }
 
-if (fs.existsSync(path.join(ROOT, 'dist', 'assets'))) {
-  const assets = fs.readdirSync(path.join(ROOT, 'dist', 'assets'));
-  ok('dist/assets/ 存在 (' + assets.length + ' 个文件)');
-} else {
-  err('未找到 dist/assets/ 目录');
-}
-
-// 3. Electron 主进程
+// 3. Electron 主进程 + 配置
 header('3. Electron 主进程');
+
 if (fs.existsSync(path.join(ROOT, 'electron', 'main.js'))) {
   ok('electron/main.js 存在');
-} else {
-  err('electron/main.js 缺失');
-}
+  const size = fs.statSync(path.join(ROOT, 'electron', 'main.js')).size;
+  info('  大小: ' + (size / 1024).toFixed(1) + ' KB');
+} else err('electron/main.js 缺失');
 
-if (fs.existsSync(path.join(ROOT, 'electron', 'preload.js'))) {
-  ok('electron/preload.js 存在');
-} else {
-  warn('electron/preload.js 不存在 (可忽略)');
-}
+if (fs.existsSync(path.join(ROOT, 'electron', 'preload.js'))) ok('electron/preload.js 存在');
+else warn('electron/preload.js 不存在 (可选)');
 
-// 4. 配置文件
 header('4. 打包配置');
 if (fs.existsSync(path.join(ROOT, 'electron', 'desktop-config.js'))) {
-  ok('electron/desktop-config.js 存在');
-} else {
-  warn('electron/desktop-config.js 不存在 (将使用 package.json 中的 build 字段)');
-}
+  ok('electron/desktop-config.js (完整配置)');
+} else warn('electron/desktop-config.js 缺失');
 
 if (fs.existsSync(path.join(ROOT, 'electron-builder.yml'))) {
-  ok('electron-builder.yml 存在');
-}
+  ok('electron-builder.yml (YAML 配置)');
+} else info('electron-builder.yml 不存在 (非必需)');
 
-// 5. 核心运行时依赖
+if (pkg.build && typeof pkg.build === 'object') {
+  ok('package.json 中存在 build 配置');
+  if (pkg.build.electronVersion) ok('  build.electronVersion: ' + pkg.build.electronVersion);
+} else info('package.json 中 build 配置不存在 (使用外部配置文件)');
+
+// 5. 运行时依赖
 header('5. 运行时依赖');
-const runtimeDeps = ['express', 'axios', 'cors', 'body-parser'];
+
+const runtimeDeps = [
+  { name: 'express', size: 100 },
+  { name: 'axios', size: 100 },
+  { name: 'cors', size: 10 },
+  { name: 'body-parser', size: 10 },
+  { name: 'uuid', size: 10 }
+];
+
 for (const dep of runtimeDeps) {
-  if (fs.existsSync(path.join(ROOT, 'node_modules', dep))) {
-    ok(dep + ' 已安装');
+  const p = path.join(ROOT, 'node_modules', dep.name);
+  if (fs.existsSync(p)) {
+    ok(dep.name + ' 已安装');
   } else {
-    err(dep + ' 未安装 (将无法在 exe 内运行后端)');
+    err(dep.name + ' 未安装');
   }
 }
 
-// 6. 数据目录
-header('6. 数据目录');
-const dataDir = path.join(ROOT, 'backend', 'data');
-if (fs.existsSync(dataDir)) {
-  const files = fs.readdirSync(dataDir);
-  ok('backend/data/ 存在 (' + files.length + ' 个文件)');
-} else {
-  warn('backend/data/ 不存在 (首次运行将自动创建空数据)');
+// 检查 app-builder.exe (Windows 特有，是 electron-builder 内部工具)
+header('6. app-builder (Windows 打包必需)');
+
+const appBinPaths = [
+  path.join(ROOT, 'node_modules', 'app-builder-bin'),
+];
+
+let hasAppBuilder = false;
+for (const p of appBinPaths) {
+  if (fs.existsSync(p)) {
+    ok('app-builder-bin 已安装');
+    hasAppBuilder = true;
+    // 尝试列出子目录
+    try {
+      const subdirs = fs.readdirSync(p);
+      info('  子目录: ' + subdirs.join(', '));
+    } catch (e) {}
+    break;
+  }
+}
+if (!hasAppBuilder) {
+  warn('app-builder-bin 缺失 (需要时会自动下载)');
+  info('  Windows 打包时如出现 ERR_ELECTRON_BUILDER_CANNOT_EXECUTE');
+  info('  → 执行: npm install --legacy-peer-deps electron-builder@24.13.3');
 }
 
-// 7. Node 版本 / 平台提示
-header('7. 运行环境');
-ok('Node.js ' + process.version);
-if (process.platform !== 'win32') {
-  warn('当前不是 Windows 平台，打包 Windows EXE 时会下载交叉编译依赖');
-  warn('  若出现 wine / NSIS 错误，请在真实 Windows 环境下打包');
+// 7. 数据目录
+header('7. 数据目录');
+
+const dataDir = path.join(ROOT, 'backend', 'data');
+if (fs.existsSync(dataDir)) {
+  try {
+    const files = fs.readdirSync(dataDir);
+    ok('backend/data/ 存在 (' + files.length + ' 个文件)');
+  } catch (e) { ok('backend/data/ 存在'); }
 } else {
-  ok('Windows 平台，可以直接打包 Windows EXE');
+  warn('backend/data/ 不存在 (首次运行会自动创建)');
 }
+
+// 8. 平台特有警告
+header('8. 平台警告');
+if (process.platform === 'win32') {
+  ok('Windows 平台 - 可以直接打包 Windows EXE');
+  info('  如遇到 EPERM 权限错误:');
+  info('  1. 关闭 VS Code / 资源管理器');
+  info('  2. 暂停防病毒软件的实时保护');
+  info('  3. 以管理员身份运行 PowerShell');
+} else if (process.platform === 'linux') {
+  warn('Linux 平台 - 打包 Windows EXE 需要 Wine');
+  info('  建议直接在 Windows 环境下打包，或安装 Wine:');
+  info('    Ubuntu/Debian: sudo apt install wine64');
+  info('    Arch Linux: sudo pacman -S wine');
+} else if (process.platform === 'darwin') {
+  warn('macOS 平台 - 打包 Windows EXE 需要 Wine + 签名配置');
+  info('  建议直接在 Windows 环境下打包');
+}
+
+// 9. npm cache / _npx 权限状态 (截图中的错误来源)
+header('9. npm 缓存状态');
+try {
+  const npmCache = path.join(os.homedir(), '.npm');
+  if (fs.existsSync(npmCache)) {
+    ok('npm 缓存目录存在: ' + npmCache);
+  } else {
+    info('npm 缓存目录不存在 (首次安装会自动创建)');
+  }
+
+  // Windows 特有: 检查是否有 EPERM 锁定征兆
+  if (process.platform === 'win32') {
+    const npxCache = path.join(os.tmpdir(), 'npm-cache-*');
+    info('  临时 npx 目录: ' + npxCache);
+    info('  如遇 EPERM 错误，可运行: node scripts/clean.js --deep');
+  }
+} catch (e) {}
 
 // 总结
 header('验证总结');
 console.log('  错误: ' + errors + ' 项');
 console.log('  警告: ' + warnings + ' 项');
+console.log('');
 
 if (errors > 0) {
+  console.log('  ✗ 存在 ' + errors + ' 个错误，修复前打包可能失败');
   console.log('');
-  console.log('  ✗ 存在 ' + errors + ' 项错误，请修复后再打包');
-  console.log('  可执行: npm run build 构建前端');
-  console.log('           npm install --legacy-peer-deps 安装依赖');
+  console.log('  推荐的完整流程:');
+  console.log('    1. node scripts/clean.js --deep');
+  console.log('    2. npm install --legacy-peer-deps');
+  console.log('    3. npm run build');
+  console.log('    4. node scripts/verify-desktop.cjs  (再次检查)');
+  console.log('    5. npm run build:exe');
   process.exit(1);
-} else {
-  console.log('');
-  console.log('  ✓ 验证通过，可以开始打包');
-  if (warnings > 0) {
-    console.log('  (含 ' + warnings + ' 个警告，不影响功能)');
-  }
-  process.exit(0);
 }
+
+console.log('  ✓ 验证通过，可以开始打包');
+if (warnings > 0) console.log('  (含 ' + warnings + ' 个警告)');
+console.log('');
+console.log('  打包命令: npm run build:exe');
+console.log('  诊断命令: node scripts/doctor.js');
+console.log('  手动下载 Electron: node scripts/download-electron.cjs');
+console.log('');
+process.exit(0);

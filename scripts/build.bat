@@ -9,11 +9,11 @@ echo.
 cd /d "%~dp0"
 cd ..
 
-echo [1/3] 依赖检查...
+echo [1/4] 依赖检查...
 node scripts\ensure-deps.cjs
 echo.
 
-echo [2/3] 清理旧构建...
+echo [2/4] 清理旧构建...
 if exist dist (
     echo   删除 dist\
     rmdir /s /q dist
@@ -24,7 +24,7 @@ if exist release (
 )
 echo.
 
-echo [3/3] 执行 Vite 构建...
+echo [3/4] 执行 Vite 构建...
 call npx vite build
 if errorlevel 1 (
     echo.
@@ -32,6 +32,11 @@ if errorlevel 1 (
     pause
     exit /b 1
 )
+echo.
+
+echo [4/4] 环境验证 (可选，打包前会再次执行)...
+node scripts\verify-desktop.cjs
+echo.
 
 echo.
 echo ============================================

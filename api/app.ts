@@ -33,6 +33,9 @@ import analysisRouter from './routes/analysis.js'
 import rulesEngineRouter from './routes/rules-engine.js'
 import promptsRouter from './routes/prompts.js'
 import modelsRouter from './routes/models.js'
+import factionRouter from './routes/faction.js'
+import artifactsRouter from './routes/artifacts.js'
+import worldTemplateRouter from './routes/world-template.js'
 import authRouter from './routes/auth.ts'
 
 const app = express()
@@ -63,6 +66,9 @@ app.use('/api/analysis', analysisRouter)
 app.use('/api/rules', rulesEngineRouter)
 app.use('/api/prompts', promptsRouter)
 app.use('/api/models', modelsRouter)
+app.use('/api/factions', factionRouter)
+app.use('/api/artifacts', artifactsRouter)
+app.use('/api/world-template', worldTemplateRouter)
 app.use('/api/auth', authRouter)
 
 // 健康检查
@@ -72,7 +78,7 @@ app.get('/api/health', (req, res) => {
     version: '3.0.0',
     dataDir: DATA_DIR,
     timestamp: new Date().toISOString(),
-    features: ['projects', 'materials', 'chapters', 'characters', 'ai-chapter', 'outline', 'templates', 'generators', 'settings', 'rag', 'knowledge-graph', 'foreshadow', 'analysis', 'rules-engine', 'prompts', 'models']
+    features: ['projects', 'materials', 'chapters', 'characters', 'ai-chapter', 'outline', 'templates', 'generators', 'settings', 'rag', 'knowledge-graph', 'foreshadow', 'analysis', 'rules-engine', 'prompts', 'models', 'factions', 'artifacts', 'world-template']
   })
 })
 

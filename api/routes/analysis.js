@@ -50,19 +50,19 @@ router.post('/chapter', async (req, res) => {
   const { chapter_id, content, project_id } = req.body;
   const text = String(content || '');
   const hits = countMatches(text, CLIMAX_PATTERNS);
-  const hook = countMatches(text.slice(0, 200), HOOK_PATTERNS);
+  const hookResult = countMatches(text.slice(0, 200), HOOK_PATTERNS);
 
   // 开头 hook 强度（0-100）
-  const hookStrength = Math.min(100, Math.round(hook.total * 12));
+  const hookStrength = Math.min(100, Math.round(hookResult.total * 12));
   // 爽点密度（单位：每千字命中数）
   const density = text.length ? +(hits.total / (text.length / 1000)).toFixed(2) : 0;
 
   res.json({
     chapter_id, project_id, word_count: text.length,
     hook_strength: hookStrength,
-    hook_hits: ch.hook.hits,
-    climax_hits: ch.hits.hits,
-    climax_total: ch.hits.total,
+    hook_hits: hookResult.hits,
+    climax_hits: hits.hits,
+    climax_total: hits.total,
     density_per_1k: density,
     sentence_count: text.split(/[。！？.!?\n]/g).length - 1,
     dialogue_count: (text.match(/[“""]/g) || []).length / 2 | 0,

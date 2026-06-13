@@ -1,0 +1,37 @@
+{
+  "materials": [
+    {
+      "id": "mat_default_001",
+      "project_id": null,
+      "category": "worldview",
+      "subCategory": "古代常识",
+      "name": "古代朝代概览",
+      "content": "本素材库收录了古代各朝代的基本常识，包括官制、礼制、历法等。",
+      "tags": ["古代", "常识", "官制"],
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "mat_default_002",
+      "project_id": null,
+      "category": "worldview",
+      "subCategory": "民俗神话",
+      "name": "神话传说体系",
+      "content": "收录各类神话传说中的神祇、仙怪、异兽等设定素材。",
+      "tags": ["神话", "传说", "仙侠"],
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z"
+    },
+    {
+      "id": "mat_default_003",
+      "project_id": null,
+      "category": "setting",
+      "subCategory": "功法流派",
+      "name": "功法修炼体系",
+      "content": "修真小说常用功法设定，包括炼气、筑基、金丹、元婴等境界。",
+      "tags": ["功法", "修炼", "境界"],
+      "createdAt": "2024-01-01T00:00:00.000Z",
+      "updatedAt": "2024-01-01T00:00:00.000Z"
+    }
+  ]
+}

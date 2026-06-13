@@ -1,0 +1,44 @@
+appId: com.lingmo.novel-studio
+productName: 灵墨小说工坊
+copyright: Copyright © 2024
+
+directories:
+  output: release
+  buildResources: build
+
+files:
+  - dist/**/*
+  - dist-electron/**/*
+  - backend/data/**/*
+  - package.json
+
+extraResources:
+  - from: backend/data
+    to: data
+    filter:
+      - "**/*"
+
+win:
+  target:
+    - target: nsis
+      arch:
+        - x64
+    - target: portable
+      arch:
+        - x64
+  artifactName: "${productName}-${version}-${arch}.${ext}"
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: true
+  createStartMenuShortcut: true
+  shortcutName: 灵墨小说工坊
+  license: LICENSE
+
+portable:
+  artifactName: "${productName}-${version}-portable.${ext}"
+
+electronDownload:
+  mirror: https://npmmirror.com/mirrors/electron/

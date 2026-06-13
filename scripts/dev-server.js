@@ -1,26 +1,47 @@
 /**
- * 灵墨小说工坊 - 独立开发服务器
+ * 灵墨小说工坊 - 独立开发服务器 v2
+ * 
+ * 核心特性：
+ * 1. 零依赖即可运行：优先使用 express + cors，缺失时自动降级到 Node.js 原生 http
+ * 2. AI API 调用容错：优先 axios，失败回落到 https 原生模块
+ * 3. 完整的项目/素材/生成器/模板/设置/大纲 API
+ * 4. 自动数据目录初始化与热修复
+ *
  * 在无 Electron 环境下也能启动后端 API
  * 配合 Vite 前端开发服务器使用
  */
-const express = (() => { try { return require('express'); } catch(e) { console.error('[错误] express 模块未安装！请先运行: npm install'); process.exit(1); } })();
-const cors = (() => { try { return require('cors'); } catch(e) { console.warn('[警告] cors 模块未安装，将跳过跨域中间件'); return null; } })();
+
 const path = require('path');
 const fs = require('fs');
 const https = require('https');
 const http = require('http');
 const { URL } = require('url');
-const { v4: uuidv4 } = require('uuid');
+const querystring = require('querystring');
 
-// 依赖容错：优先使用 axios，失败时回落到 Node.js 内置 http/https
+// ============================================================
+// 1. 依赖容错层 - 优雅处理 express/cors/axios/uuid 缺失
+// ============================================================
+
+let express = null;
+let cors = null;
 let axios = null;
-let useNativeHttp = false;
-try {
-  axios = require('axios');
-} catch (e) {
-  console.warn('[警告] axios 模块未找到，使用 Node.js 内置 https 模块降级运行');
-  useNativeHttp = true;
+let useNativeHttp = true;  // 默认使用原生 http，更稳健
+let useExpress = false;
+let uuidV4 = null;
+
+try { express = require('express'); useExpress = true; } catch(e) { console.warn('[降级] express 未安装，使用 Node 原生 http 服务器'); }
+try { cors = require('cors'); } catch(e) { console.warn('[降级] cors 未安装，手动设置 CORS 响应头'); }
+try { axios = require('axios'); useNativeHttp = false; } catch(e) { console.warn('[降级] axios 未安装，使用原生 https 调用 AI API'); }
+try { uuidV4 = require('uuid').v4; } catch(e) { /* 用内置随机替代 */ }
+
+function genId(prefix) {
+  if (uuidV4) return `${prefix}_${uuidV4().slice(0, 8)}_${Date.now().toString(36)}`;
+  return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
+
+// ============================================================
+// 2. AI API 调用层 - httpPost 统一接口（axios 或原生 https）
+// ============================================================
 
 function nativePost(url, data, options) {
   return new Promise((resolve, reject) => {
@@ -48,7 +69,7 @@ function nativePost(url, data, options) {
         });
       });
       req.on('error', reject);
-      req.on('timeout', () => { req.destroy(new Error('请求超时')); });
+      req.on('timeout', () => { req.destroy(new Error('请求超时，请检查网络或 API 地址')); });
       req.write(postData);
       req.end();
     } catch (err) { reject(err); }
@@ -62,12 +83,15 @@ function httpPost(url, data, options) {
   return nativePost(url, data, options);
 }
 
-const app = express();
-const PORT = process.env.PORT || 3001;
+// ============================================================
+// 3. 服务器抽象层 - createServer() 同时支持 express 和原生 http
+// ============================================================
+
+const PORT = parseInt(process.env.PORT) || 3001;
 const DATA_DIR = path.join(__dirname, '..', 'backend', 'data');
 
 if (!fs.existsSync(DATA_DIR)) {
-  fs.mkdirSync(DATA_DIR, { recursive: true });
+  try { fs.mkdirSync(DATA_DIR, { recursive: true }); } catch(e) { console.error('创建数据目录失败:', e.message); }
 }
 
 // 初始化默认数据文件
@@ -78,36 +102,173 @@ const defaultData = {
   templates: { templates: [] },
   settings: { settings: {} }
 };
-
 Object.entries(defaultData).forEach(([name, content]) => {
   const filePath = path.join(DATA_DIR, `${name}.json`);
   if (!fs.existsSync(filePath)) {
-    fs.writeFileSync(filePath, JSON.stringify(content, null, 2));
+    try { fs.writeFileSync(filePath, JSON.stringify(content, null, 2)); } catch(e) { console.error(`初始化 ${name}.json 失败:`, e.message); }
   }
 });
 
-if (cors) app.use(cors());
-app.use(express.json({ limit: '10mb' }));
-app.use(express.urlencoded({ extended: true, limit: '10mb' }));
-
 function readJSON(file, defaultValue) {
   try {
-    if (fs.existsSync(file)) return JSON.parse(fs.readFileSync(file, 'utf-8'));
-  } catch (e) { console.error(`读取失败 ${file}:`, e); }
+    if (fs.existsSync(file)) {
+      const raw = fs.readFileSync(file, 'utf-8');
+      if (!raw.trim()) return defaultValue;
+      return JSON.parse(raw);
+    }
+  } catch (e) { console.error(`[警告] 读取失败 ${path.basename(file)}:`, e.message); }
   return defaultValue;
 }
 
 function writeJSON(file, data) {
   try {
-    fs.writeFileSync(file, JSON.stringify(data, null, 2), 'utf-8');
+    const tmp = file + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf-8');
+    fs.renameSync(tmp, file);
     return true;
   } catch (e) {
-    console.error(`写入失败 ${file}:`, e);
+    console.error(`[错误] 写入失败 ${path.basename(file)}:`, e.message);
     return false;
   }
 }
 
-// ==================== 项目管理 ====================
+// ---- 路由注册 ----
+// 无论 express 还是原生 http，都暴露同样的 {get,post,put,delete,use,listen} 接口
+function createServer() {
+  const routes = [];  // { method, pattern, regex, paramNames, handler }
+  const middlewares = [];
+
+  function parsePattern(pattern) {
+    const parts = pattern.split('/').filter(Boolean);
+    const paramNames = [];
+    const regexParts = parts.map(p => {
+      if (p.startsWith(':')) { paramNames.push(p.slice(1)); return '([^/]+)'; }
+      return p.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    });
+    return { regex: new RegExp('^/' + regexParts.join('/') + '/?$'), paramNames };
+  }
+
+  function register(method, pattern, handler) {
+    const { regex, paramNames } = parsePattern(pattern);
+    routes.push({ method: method.toUpperCase(), pattern, regex, paramNames, handler });
+  }
+
+  function match(req) {
+    const url = req.parsedUrl || require('url').parse(req.url);
+    req.parsedUrl = url;
+    for (const r of routes) {
+      if (r.method !== req.method && !(r.method === 'USE')) continue;
+      const m = url.pathname.match(r.regex);
+      if (m) {
+        req.params = {};
+        r.paramNames.forEach((name, i) => { req.params[name] = decodeURIComponent(m[i + 1]); });
+        // query string
+        req.query = querystring.parse(url.query || '');
+        return r.handler;
+      }
+    }
+    return null;
+  }
+
+  const server = {
+    get: (p, h) => register('GET', p, h),
+    post: (p, h) => register('POST', p, h),
+    put: (p, h) => register('PUT', p, h),
+    delete: (p, h) => register('DELETE', p, h),
+    use: (fn) => { middlewares.push(fn); },
+    _routes: routes,
+    listen: (port, cb) => {
+      // 响应辅助对象
+      function makeRes(res) {
+        return {
+          status(code) { res.statusCode = code; return this; },
+          json(data) {
+            res.setHeader('Content-Type', 'application/json; charset=utf-8');
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+            res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+            res.end(JSON.stringify(data));
+          },
+          send(s) {
+            res.setHeader('Access-Control-Allow-Origin', '*');
+            res.end(String(s));
+          }
+        };
+      }
+
+      const httpServer = http.createServer((req, res) => {
+        // CORS preflight
+        if (req.method === 'OPTIONS') {
+          res.setHeader('Access-Control-Allow-Origin', '*');
+          res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PUT,DELETE,OPTIONS');
+          res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+          res.statusCode = 204;
+          return res.end();
+        }
+        // 解析 body
+        let body = '';
+        req.on('data', (chunk) => { body += chunk; if (body.length > 10 * 1024 * 1024) { req.destroy(); } });
+        req.on('end', () => {
+          if (body.trim()) {
+            try { req.body = JSON.parse(body); } catch (e) { req.body = {}; }
+          } else {
+            req.body = {};
+          }
+          // middleware (if any)
+          for (const mw of middlewares) {
+            try { mw(req, makeRes(res)); } catch(e) {}
+          }
+          const handler = match(req);
+          if (handler) {
+            try { handler(req, makeRes(res)); }
+            catch (e) {
+              res.statusCode = 500;
+              res.setHeader('Content-Type', 'application/json; charset=utf-8');
+              res.end(JSON.stringify({ error: e.message || '服务器错误' }));
+            }
+          } else {
+            res.statusCode = 404;
+            res.setHeader('Content-Type', 'application/json; charset=utf-8');
+            res.end(JSON.stringify({ error: 'NotFound', path: require('url').parse(req.url).pathname }));
+          }
+        });
+      });
+      httpServer.listen(port, () => {
+        console.log(`[OK] ${useExpress ? 'Express' : '原生 HTTP'} 服务器运行在 http://localhost:${port}`);
+        if (cb) cb();
+      });
+      return httpServer;
+    }
+  };
+
+  // 如果 express 可用，创建 express 实例作为 wrapper
+  if (useExpress) {
+    const app = express();
+    if (cors) app.use(cors());
+    app.use(express.json({ limit: '10mb' }));
+    app.use(express.urlencoded({ extended: true, limit: '10mb' }));
+    app.listen = (port, cb) => {
+      const s = app.listen(port, () => {
+        console.log(`[OK] Express 服务器运行在 http://localhost:${port}`);
+        if (cb) cb();
+      });
+      return s;
+    };
+    return app;
+  }
+  return server;
+}
+
+const app = createServer();
+
+// ============================================================
+// 4. API 路由 - 项目管理
+// ============================================================
+
+app.get('/api/health', (req, res) => {
+  res.json({ status: 'ok', dataDir: DATA_DIR, engine: useExpress ? 'express' : 'native-http', timestamp: new Date().toISOString() });
+});
+
 app.get('/api/projects', (req, res) => {
   const data = readJSON(path.join(DATA_DIR, 'projects.json'), { projects: [] });
   res.json(data.projects || []);
@@ -115,8 +276,9 @@ app.get('/api/projects', (req, res) => {
 
 app.post('/api/projects', (req, res) => {
   const data = readJSON(path.join(DATA_DIR, 'projects.json'), { projects: [] });
+  if (!data.projects) data.projects = [];
   const project = {
-    id: `proj_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    id: genId('proj'),
     name: req.body.name || '未命名项目',
     description: req.body.description || '',
     createdAt: new Date().toISOString(),
@@ -124,7 +286,6 @@ app.post('/api/projects', (req, res) => {
     outline: req.body.outline || { title: '', summary: '', chapters: [] },
     settings: req.body.settings || { genre: '玄幻', style: '爽文风' }
   };
-  if (!data.projects) data.projects = [];
   data.projects.push(project);
   writeJSON(path.join(DATA_DIR, 'projects.json'), data);
   res.status(201).json(project);
@@ -157,7 +318,10 @@ app.delete('/api/projects/:id', (req, res) => {
   res.json({ success: true });
 });
 
-// ==================== 素材管理 ====================
+// ============================================================
+// 5. API 路由 - 素材管理
+// ============================================================
+
 app.get('/api/materials', (req, res) => {
   const data = readJSON(path.join(DATA_DIR, 'materials.json'), { materials: [] });
   let list = data.materials || [];
@@ -175,7 +339,7 @@ app.post('/api/materials', (req, res) => {
   const data = readJSON(path.join(DATA_DIR, 'materials.json'), { materials: [] });
   if (!data.materials) data.materials = [];
   const mat = {
-    id: `mat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    id: genId('mat'),
     project_id: req.body.project_id !== undefined ? req.body.project_id : null,
     category: req.body.category || 'setting',
     subCategory: req.body.subCategory || '',
@@ -194,7 +358,7 @@ app.post('/api/materials/batch', (req, res) => {
   const data = readJSON(path.join(DATA_DIR, 'materials.json'), { materials: [] });
   if (!data.materials) data.materials = [];
   const list = (req.body.materials || []).map(m => ({
-    id: `mat_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`,
+    id: genId('mat'),
     project_id: m.project_id !== undefined ? m.project_id : null,
     category: m.category || 'setting',
     subCategory: m.subCategory || '',
@@ -226,14 +390,17 @@ app.delete('/api/materials/:id', (req, res) => {
   res.json({ success: true });
 });
 
-// ==================== 生成器管理 ====================
+// ============================================================
+// 6. API 路由 - 生成器管理
+// ============================================================
+
 app.get('/api/generators', (req, res) => {
   const data = readJSON(path.join(DATA_DIR, 'generators.json'), { generators: [] });
   res.json(data.generators || []);
 });
 
 app.get('/api/generators/categories', (req, res) => {
-  const categories = [
+  res.json([
     { id: 'outline', name: '大纲类' },
     { id: 'character', name: '人物类' },
     { id: 'worldview', name: '世界观类' },
@@ -243,8 +410,7 @@ app.get('/api/generators/categories', (req, res) => {
     { id: 'template', name: '爆文模板类' },
     { id: 'tool', name: '工具类' },
     { id: 'custom', name: '自定义' }
-  ];
-  res.json(categories);
+  ]);
 });
 
 app.post('/api/generators', (req, res) => {
@@ -284,69 +450,53 @@ app.delete('/api/generators/:id', (req, res) => {
   res.json({ success: true });
 });
 
-// ==================== AI 生成调用 ====================
+// ============================================================
+// 7. AI 生成调用 - 兼容内置生成器和自定义生成器
+// ============================================================
+
 app.post('/api/generators/generate', async (req, res) => {
   const { generator_id, params, project_id, with_project_material } = req.body;
   const genData = readJSON(path.join(DATA_DIR, 'generators.json'), { generators: [] });
   const gen = (genData.generators || []).find(g => g.id === generator_id);
 
-  const settingsFile = path.join(DATA_DIR, 'settings.json');
-  const settings = readJSON(settingsFile, { settings: {} }).settings || {};
+  const settings = readJSON(path.join(DATA_DIR, 'settings.json'), { settings: {} }).settings || {};
+
   if (!settings.apiKey || !settings.apiEndpoint) {
     return res.status(400).json({
-      error: `请在设置中配置 AI API 的密钥和接口地址。\n\n当前设置状态:\n- API 密钥: ${settings.apiKey ? '已配置 ✓' : '未配置 ✗'}\n- API 地址: ${settings.apiEndpoint ? settings.apiEndpoint : '未配置'}\n- 模型: ${settings.model || '(默认使用 OpenAI gpt-4)'}\n\n支持所有兼容 OpenAI 接口格式的服务商(包括 Ollama DeepSeek Claude 等)。`
+      error: `请在设置中配置 AI API 的密钥和接口地址。\n\n当前设置状态:\n- API 密钥: ${settings.apiKey ? '已配置 ✓' : '未配置 ✗'}\n- API 地址: ${settings.apiEndpoint || '未配置'}\n- 模型: ${settings.model || '(默认使用 OpenAI gpt-4)'}\n\n支持所有兼容 OpenAI 接口格式的服务商 (包括 Ollama / DeepSeek / Claude 等)。`
     });
   }
 
-  // 如果是内置生成器，使用内置的提示模板
+  // 内置生成器的系统提示
   const builtinTemplates = {
-    gen_outline_basic: {
-      sysTpl: '你是一个资深网文编辑，擅长将创意打磨成完整可行的小说大纲。请严格按照大纲结构输出：核心卖点、主题、主线、分卷结构、章节列表、结局设计。',
-      userTpl: '用户创意：\n{input}\n\n题材：{genre}\n文风：{style}\n请输出完整大纲。'
-    },
-    gen_character_card: {
-      sysTpl: '你是网文人物设计专家。请生成生动、立体的人物设定，包含外貌、性格、成长轨迹、关系网络等。',
-      userTpl: '人物定位：{input}\n请输出完整人物设定卡。'
-    },
-    gen_worldview_basic: {
-      sysTpl: '你是世界级奇幻/科幻设定专家，请构建严谨自洽的世界观体系，包含地理、历史、力量体系、社会结构、文化风俗等。',
-      userTpl: '核心创意：{input}\n请输出完整世界观。'
-    },
-    gen_plot_conflict: {
-      sysTpl: '你是顶级剧情设计顾问，擅长设计令人拍案叫绝的剧情冲突、反转和高潮。',
-      userTpl: '当前章节背景：{input}\n请设计一个精彩冲突桥段（起因、经过、反转、结果）。'
-    },
-    gen_writing_enhance: {
-      sysTpl: '你是文学编辑，擅长将普通文字改写成有画面感、有节奏、有张力的高质量文字。',
-      userTpl: '原文：\n{input}\n请润色。要求：{requirement}'
-    },
-    gen_tool_names: {
-      sysTpl: '你是起名大师，请根据风格生成有创意、好记、符合题材的名称。',
-      userTpl: '类型：{type}\n数量：{count}\n风格：{style}\n题材：{genre}\n请输出。'
-    },
-    gen_template_kpi: {
-      sysTpl: '你是网文爆款内容专家，熟悉行业KPI数据。请按爆款模板生成内容。',
-      userTpl: '题材：{genre}\n核心卖点：{sellingPoint}\n请生成：5个高点击率标题 + 300字黄金开头。'
-    }
+    gen_outline_basic: { sys: '你是一个资深网文编辑，擅长将创意打磨成完整可行的小说大纲。请严格按照大纲结构输出：核心卖点、主题、主线、分卷结构、章节列表、结局设计。', user: '用户创意：\n{input}\n\n题材：{genre}\n文风：{style}\n请输出完整大纲。' },
+    gen_character_card: { sys: '你是网文人物设计专家。请生成生动、立体的人物设定，包含外貌、性格、成长轨迹、关系网络等。', user: '人物定位：{input}\n请输出完整人物设定卡。' },
+    gen_worldview_basic: { sys: '你是世界级奇幻/科幻设定专家，请构建严谨自洽的世界观体系，包含地理、历史、力量体系、社会结构、文化风俗等。', user: '核心创意：{input}\n请输出完整世界观。' },
+    gen_plot_conflict: { sys: '你是顶级剧情设计顾问，擅长设计令人拍案叫绝的剧情冲突、反转和高潮。', user: '当前章节背景：{input}\n请设计一个精彩冲突桥段（起因、经过、反转、结果）。' },
+    gen_writing_enhance: { sys: '你是文学编辑，擅长将普通文字改写成有画面感、有节奏、有张力的高质量文字。', user: '原文：\n{input}\n请润色。要求：{requirement}' },
+    gen_tool_names: { sys: '你是起名大师，请根据风格生成有创意、好记、符合题材的名称。', user: '类型：{type}\n数量：{count}\n风格：{style}\n题材：{genre}\n请输出。' },
+    gen_template_kpi: { sys: '你是网文爆款内容专家，熟悉行业KPI数据。请按爆款模板生成内容。', user: '题材：{genre}\n核心卖点：{sellingPoint}\n请生成：5个高点击率标题 + 300字黄金开头。' }
   };
 
-  const template = builtinTemplates[generator_id] || {
-    sysTpl: gen?.systemPrompt || '你是网文写作助手。',
-    userTpl: (gen?.userPromptTemplate || '').replace(/\{(\w+)\}/g, (match, key) => params?.[key] != null ? String(params[key]) : match) || '请根据输入创作：\n{input}'
+  const tpl = builtinTemplates[generator_id] || {
+    sys: gen?.systemPrompt || '你是网文写作助手，请帮助用户创作高质量内容。',
+    user: (gen?.userPromptTemplate || '').replace(/\{(\w+)\}/g, (match, key) => params?.[key] != null ? String(params[key]) : match) || '请根据输入创作：\n{input}'
   };
 
-  let systemPrompt = template.sysTpl;
-  let userPrompt = template.userTpl.replace(/\{(\w+)\}/g, (match, key) => {
+  // 替换模板变量
+  const replaceVars = (t) => t.replace(/\{(\w+)\}/g, (match, key) => {
     const val = params?.[key];
-    return val != null && val !== '' ? String(val) : (key === 'genre' ? '玄幻' : key === 'style' ? '爽文风' : key === 'count' ? '10' : key === 'type' ? '人名' : key === 'sellingPoint' ? '系统流' : '');
+    return val != null && String(val).trim() !== '' ? String(val) :
+      (key === 'genre' ? '玄幻' : key === 'style' ? '爽文风' : key === 'count' ? '10' : key === 'type' ? '人名' : key === 'sellingPoint' ? '系统流' : key === 'input' ? '请补充输入内容' : '');
   });
 
-  // 关联项目素材
+  let systemPrompt = tpl.sys;
+  let userPrompt = replaceVars(tpl.user);
+
+  // 关联项目素材 - 注入设定上下文
   if (with_project_material && project_id) {
     const matData = readJSON(path.join(DATA_DIR, 'materials.json'), { materials: [] });
-    const projMat = (matData.materials || []).filter(m =>
-      m.project_id === project_id && ['worldview', 'character', 'setting', 'plot'].includes(m.category)
-    );
+    const projMat = (matData.materials || []).filter(m => m.project_id === project_id && ['worldview', 'character', 'setting', 'plot'].includes(m.category));
     if (projMat.length > 0) {
       const materialContext = projMat.slice(0, 5).map(m => `【${m.name}】\n${m.content}`).join('\n\n------\n\n');
       systemPrompt = `当前项目核心设定，请严格遵循：\n\n${materialContext}\n\n------\n\n${systemPrompt}`;
@@ -354,7 +504,7 @@ app.post('/api/generators/generate', async (req, res) => {
   }
 
   try {
-    const endpoint = settings.apiEndpoint || 'https://api.openai.com/v1/chat/completions';
+    const endpoint = settings.apiEndpoint;
     const model = settings.model || 'gpt-4';
     const temperature = params?.temperature ?? gen?.defaultParams?.temperature ?? settings.temperature ?? 0.8;
     const maxTokens = params?.maxTokens ?? gen?.defaultParams?.maxTokens ?? settings.maxTokens ?? 2000;
@@ -399,13 +549,15 @@ app.post('/api/generators/generate', async (req, res) => {
 
     res.json({ success: true, generated_text: generatedText, usage: response.data.usage });
   } catch (err) {
-    console.error('AI生成失败:', err.message);
-    const msg = err?.response?.data?.error?.message || err?.response?.data?.error || err?.message || '生成失败';
-    res.status(500).json({ error: `AI生成失败: ${msg}` });
+    const msg = err?.response?.data?.error?.message || err?.response?.data?.error || err?.message || '生成失败，请检查 API 配置或网络连接';
+    res.status(500).json({ error: `AI 生成失败: ${msg}` });
   }
 });
 
-// ==================== 模板库 ====================
+// ============================================================
+// 8. 模板库
+// ============================================================
+
 app.get('/api/templates', (req, res) => {
   const data = readJSON(path.join(DATA_DIR, 'templates.json'), { templates: [] });
   let list = data.templates || [];
@@ -417,11 +569,7 @@ app.get('/api/templates', (req, res) => {
 app.post('/api/templates', (req, res) => {
   const data = readJSON(path.join(DATA_DIR, 'templates.json'), { templates: [] });
   if (!data.templates) data.templates = [];
-  const template = {
-    id: `tpl_${Date.now()}`,
-    ...req.body,
-    createdAt: new Date().toISOString()
-  };
+  const template = { id: `tpl_${Date.now()}`, ...req.body, createdAt: new Date().toISOString() };
   data.templates.push(template);
   writeJSON(path.join(DATA_DIR, 'templates.json'), data);
   res.status(201).json(template);
@@ -436,172 +584,116 @@ app.put('/api/templates/:id', (req, res) => {
   res.json(data.templates[idx]);
 });
 
-// ==================== 设置 ====================
+// ============================================================
+// 9. 设置
+// ============================================================
+
 app.get('/api/settings', (req, res) => {
   const data = readJSON(path.join(DATA_DIR, 'settings.json'), { settings: {} });
-  res.json(data.settings || {});
+  const s = data.settings || {};
+  // 安全起见不返回明文 key 的完整内容到前端，返回标识
+  res.json({ ...s, apiKey: s.apiKey ? (s.apiKey.slice(0, 4) + '****' + s.apiKey.slice(-4)) : '' });
 });
 
 app.put('/api/settings', (req, res) => {
   const data = readJSON(path.join(DATA_DIR, 'settings.json'), { settings: {} });
   data.settings = { ...(data.settings || {}), ...req.body };
   writeJSON(path.join(DATA_DIR, 'settings.json'), data);
-  res.json(data.settings);
+  res.json({ ...data.settings, apiKey: data.settings.apiKey ? (data.settings.apiKey.slice(0, 4) + '****' + data.settings.apiKey.slice(-4)) : '' });
 });
 
-// ==================== 大纲补全 / 合成 ====================
+// ============================================================
+// 10. 大纲补全 / 合成 / 导入
+// ============================================================
+
 app.post('/api/outline/complete', async (req, res) => {
   const { incomplete_outline, style, project_id } = req.body;
   const settings = readJSON(path.join(DATA_DIR, 'settings.json'), { settings: {} }).settings || {};
-  if (!settings.apiKey || !settings.apiEndpoint) {
-    return res.status(400).json({ error: '请先在设置中配置 AI API 密钥和地址' });
-  }
+  if (!settings.apiKey || !settings.apiEndpoint) return res.status(400).json({ error: '请先在设置中配置 AI API 密钥和地址' });
   try {
-    const response = await httpPost(
-      settings.apiEndpoint,
-      {
-        model: settings.model || 'gpt-4',
-        messages: [
-          { role: 'system', content: '你是一个专业的网文大纲策划专家，擅长补全不完整的大纲。请生成完整的世界观、人物、分卷、章节、转折点和结局设计。' },
-          { role: 'user', content: `残缺大纲：\n${incomplete_outline}\n\n风格：${style || '爽文风'}\n请补全为完整小说大纲。` }
-        ],
-        temperature: 0.85,
-        max_tokens: 3000
-      },
-      { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${settings.apiKey}` }, timeout: 120000 }
-    );
+    const response = await httpPost(settings.apiEndpoint, {
+      model: settings.model || 'gpt-4',
+      messages: [
+        { role: 'system', content: '你是一个专业的网文大纲策划专家，擅长补全不完整的大纲。请生成完整的世界观、人物、分卷、章节、转折点和结局设计。' },
+        { role: 'user', content: `残缺大纲：\n${incomplete_outline}\n\n风格：${style || '爽文风'}\n请补全为完整小说大纲。` }
+      ],
+      temperature: 0.85, max_tokens: 3000
+    }, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${settings.apiKey}` }, timeout: 120000 });
     const result = response.data?.choices?.[0]?.message?.content || '';
-
-    // 自动归档到素材
+    // 归档素材
     try {
       const mat = readJSON(path.join(DATA_DIR, 'materials.json'), { materials: [] });
       if (!mat.materials) mat.materials = [];
-      mat.materials.push({
-        id: `mat_${Date.now()}_complete`,
-        project_id: project_id || null,
-        category: 'plot',
-        subCategory: '大纲',
-        name: `补全大纲 ${new Date().toLocaleString()}`,
-        content: result,
-        tags: ['AI补全', style || '爽文风'],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      });
+      mat.materials.push({ id: genId('mat'), project_id: project_id || null, category: 'plot', subCategory: '大纲', name: `补全大纲 ${new Date().toLocaleString()}`, content: result, tags: ['AI补全', style || '爽文风'], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
       writeJSON(path.join(DATA_DIR, 'materials.json'), mat);
     } catch (_) {}
-
     res.json({ success: true, completed_outline: result });
   } catch (err) {
-    res.status(500).json({ error: err?.response?.data?.error?.message || err?.message || '补全失败' });
+    res.status(500).json({ error: err?.response?.data?.error?.message || err?.message || '补全失败，请检查网络或 API 配置' });
   }
 });
 
 app.post('/api/outline/merge', async (req, res) => {
   const { outlines, style, project_id } = req.body;
-  if (!Array.isArray(outlines) || outlines.length < 2) return res.status(400).json({ error: '至少需要2份大纲' });
+  if (!Array.isArray(outlines) || outlines.length < 2) return res.status(400).json({ error: '至少需要 2 份大纲才能合成' });
   const settings = readJSON(path.join(DATA_DIR, 'settings.json'), { settings: {} }).settings || {};
   if (!settings.apiKey || !settings.apiEndpoint) return res.status(400).json({ error: '请先在设置中配置 AI API' });
   try {
-    const combined = outlines.map((o, i) => `大纲${i + 1}：\n${typeof o === 'string' ? o : o.content || ''}`).join('\n\n---\n\n');
-    const response = await httpPost(
-      settings.apiEndpoint,
-      {
-        model: settings.model || 'gpt-4',
-        messages: [
-          { role: 'system', content: '你是一个专业的网文大纲策划专家，擅长将多份大纲合成为逻辑通顺的完整大纲。请梳理时间线、去重冲突、拼接逻辑。' },
-          { role: 'user', content: `待合成的${outlines.length}份大纲：\n\n${combined}\n\n请合成为一份完整大纲。` }
-        ],
-        temperature: 0.85,
-        max_tokens: 4000
-      },
-      { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${settings.apiKey}` }, timeout: 120000 }
-    );
+    const combined = outlines.map((o, i) => `大纲${i + 1}：\n${typeof o === 'string' ? o : (o.content || '')}`).join('\n\n---\n\n');
+    const response = await httpPost(settings.apiEndpoint, {
+      model: settings.model || 'gpt-4',
+      messages: [
+        { role: 'system', content: '你是一个专业的网文大纲策划专家，擅长将多份大纲合成为逻辑通顺的完整大纲。请梳理时间线、去重冲突、拼接逻辑。' },
+        { role: 'user', content: `待合成的${outlines.length}份大纲：\n\n${combined}\n\n请合成为一份完整大纲。` }
+      ],
+      temperature: 0.85, max_tokens: 4000
+    }, { headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${settings.apiKey}` }, timeout: 120000 });
     const result = response.data?.choices?.[0]?.message?.content || '';
     try {
       const mat = readJSON(path.join(DATA_DIR, 'materials.json'), { materials: [] });
       if (!mat.materials) mat.materials = [];
-      mat.materials.push({
-        id: `mat_${Date.now()}_merge`,
-        project_id: project_id || null,
-        category: 'plot',
-        subCategory: '合成大纲',
-        name: `合成大纲 ${new Date().toLocaleString()}`,
-        content: result,
-        tags: ['AI合成', `${outlines.length}份合并`],
-        createdAt: new Date().toISOString(),
-        updatedAt: new Date().toISOString()
-      });
+      mat.materials.push({ id: genId('mat'), project_id: project_id || null, category: 'plot', subCategory: '合成大纲', name: `合成大纲 ${new Date().toLocaleString()}`, content: result, tags: ['AI合成', `${outlines.length}份合并`], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
       writeJSON(path.join(DATA_DIR, 'materials.json'), mat);
     } catch (_) {}
     res.json({ success: true, merged_outline: result });
   } catch (err) {
-    res.status(500).json({ error: err?.response?.data?.error?.message || err?.message || '合成失败' });
+    res.status(500).json({ error: err?.response?.data?.error?.message || err?.message || '合成失败，请检查网络或 API 配置' });
   }
 });
 
 app.post('/api/outline/import', (req, res) => {
-  const { outline, project_name, auto_split, project_id } = req.body;
+  const { outline, project_name, project_id } = req.body;
   const data = readJSON(path.join(DATA_DIR, 'projects.json'), { projects: [] });
   if (!data.projects) data.projects = [];
-  const pid = project_id || `proj_${Date.now()}_${Math.random().toString(36).slice(2, 6)}`;
+  const pid = project_id || genId('proj');
   const idx = data.projects.findIndex(p => p.id === pid);
   if (idx >= 0) {
-    data.projects[idx] = {
-      ...data.projects[idx],
-      outline: {
-        title: outline?.title || data.projects[idx].outline?.title || '',
-        summary: outline?.summary || data.projects[idx].outline?.summary || '',
-        chapters: outline?.chapters || data.projects[idx].outline?.chapters || [],
-        content: outline?.content || data.projects[idx].outline?.content || ''
-      },
-      updatedAt: new Date().toISOString()
-    };
+    data.projects[idx] = { ...data.projects[idx], outline: { title: outline?.title || data.projects[idx].outline?.title || '', summary: outline?.summary || data.projects[idx].outline?.summary || '', chapters: outline?.chapters || data.projects[idx].outline?.chapters || [], content: outline?.content || data.projects[idx].outline?.content || '' }, updatedAt: new Date().toISOString() };
   } else {
-    data.projects.push({
-      id: pid,
-      name: project_name || '新小说项目',
-      description: outline?.summary || '',
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-      outline: { title: outline?.title || '', summary: outline?.summary || '', chapters: outline?.chapters || [], content: outline?.content || '' },
-      settings: { genre: outline?.genre || '玄幻', style: outline?.style || '爽文风' }
-    });
+    data.projects.push({ id: pid, name: project_name || '新小说项目', description: outline?.summary || '', createdAt: new Date().toISOString(), updatedAt: new Date().toISOString(), outline: { title: outline?.title || '', summary: outline?.summary || '', chapters: outline?.chapters || [], content: outline?.content || '' }, settings: { genre: outline?.genre || '玄幻', style: outline?.style || '爽文风' } });
   }
   writeJSON(path.join(DATA_DIR, 'projects.json'), data);
-
-  if (auto_split && outline?.content) {
-    const mat = readJSON(path.join(DATA_DIR, 'materials.json'), { materials: [] });
-    if (!mat.materials) mat.materials = [];
-    mat.materials.push({
-      id: `mat_${Date.now()}_import`,
-      project_id: pid,
-      category: 'plot',
-      subCategory: '大纲导入',
-      name: '导入的大纲',
-      content: outline.content,
-      tags: ['导入'],
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString()
-    });
-    writeJSON(path.join(DATA_DIR, 'materials.json'), mat);
+  if (outline?.content) {
+    try {
+      const mat = readJSON(path.join(DATA_DIR, 'materials.json'), { materials: [] });
+      if (!mat.materials) mat.materials = [];
+      mat.materials.push({ id: genId('mat'), project_id: pid, category: 'plot', subCategory: '大纲导入', name: '导入的大纲', content: outline.content, tags: ['导入'], createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() });
+      writeJSON(path.join(DATA_DIR, 'materials.json'), mat);
+    } catch (_) {}
   }
   res.status(201).json({ project_id: pid, message: '导入成功' });
 });
 
-// ==================== 健康检查 ====================
-app.get('/api/health', (req, res) => {
-  res.json({ status: 'ok', dataDir: DATA_DIR, timestamp: new Date().toISOString() });
-});
+// ============================================================
+// 11. 启动服务器
+// ============================================================
 
-// 启动
 app.listen(PORT, () => {
-  console.log('');
   console.log('═══════════════════════════════════════════');
-  console.log('  灵墨小说工坊 - API 服务器');
-  console.log('═══════════════════════════════════════════');
+  console.log('  灵墨小说工坊 - 后端 API 服务器');
+  console.log('  版本: v3.5.0  模式: ' + (useExpress ? 'Express' : '零依赖原生 HTTP'));
   console.log(`  访问地址: http://localhost:${PORT}`);
   console.log(`  数据目录: ${DATA_DIR}`);
-  console.log(`  状态: 运行中 ✓`);
+  console.log(`  健康检查: http://localhost:${PORT}/api/health`);
   console.log('═══════════════════════════════════════════');
-  console.log('');
 });

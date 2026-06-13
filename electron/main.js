@@ -60,12 +60,24 @@ function nativePost(url, data, options) {
         let body = '';
         res.on('data', (chunk) => { body += chunk; });
         res.on('end', () => {
-          try { resolve({ data: JSON.parse(body || '{}'), status: res.statusCode }); }
-          catch (e) { resolve({ data: body, status: res.statusCode }); }
+          const statusCode = res.statusCode || 500;
+          let parsed;
+          try { parsed = JSON.parse(body || '{}'); }
+          catch (e) { parsed = body; }
+          if (statusCode >= 400) {
+            const errMsg = typeof parsed === 'object' && parsed
+              ? (parsed.error?.message || parsed.error || parsed.message || `API 请求失败 (HTTP ${statusCode})`)
+              : `API 请求失败 (HTTP ${statusCode})`;
+            const err = new Error(typeof errMsg === 'string' ? errMsg : `HTTP ${statusCode}`);
+            err.status = statusCode; err.raw = parsed;
+            reject(err);
+          } else {
+            resolve({ data: parsed, status: statusCode });
+          }
         });
       });
       req.on('error', reject);
-      req.on('timeout', () => { req.destroy(new Error('请求超时，请检查网络或 API 地址')); });
+      req.on('timeout', () => { req.destroy(new Error('请求超时，请检查网络或 API 地址 (HTTP timeout)')); });
       req.write(postData);
       req.end();
     } catch (err) { reject(err); }
@@ -137,6 +149,54 @@ function writeText(subpath, content) {
 
 function jsonPath(name) { return path.join(DATA_DIR, `${name}.json`); }
 
+// ------------------------------------------------------------
+// 功能开关 / 配置缓存
+// ------------------------------------------------------------
+const DEFAULT_TOGGLES_CONST = {
+  rag: true, vector_enabled: true, graph: true, bm25_enabled: true, fallback_enabled: true,
+  foreshadow: true, analysis: true,
+  rules: true, prompts: true, models_multi: true, event_bus: true,
+  character_memory: true, novel_storage: true
+};
+function getToggle(key) {
+  try {
+    const t = readJSON(path.join(DATA_DIR, 'feature_toggles.json'), { toggles: {} });
+    const merged = { ...DEFAULT_TOGGLES_CONST, ...(t.toggles || {}) };
+    return key ? (merged[key] !== undefined ? merged[key] : DEFAULT_TOGGLES_CONST[key]) : merged;
+  } catch (_) { return DEFAULT_TOGGLES_CONST[key]; }
+}
+
+// ------------------------------------------------------------
+// JSON 写文件内存锁（防止同一文件并发写入丢失）
+// ------------------------------------------------------------
+const _writeLocks = new Map();
+function readJSONSafe(file, defaultValue) {
+  return readJSON(file, defaultValue);
+}
+async function writeJSONSafe(file, data) {
+  while (_writeLocks.get(file)) {
+    await new Promise(r => setTimeout(r, 10));
+  }
+  _writeLocks.set(file, true);
+  try {
+    const tmp = file + '.tmp';
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf-8');
+    fs.renameSync(tmp, file);
+    return true;
+  } finally {
+    _writeLocks.delete(file);
+  }
+}
+function writeJSONSyncSafe(file, data) {
+  // 简化同步版本：如果锁存在，仍写入（避免同步路径死锁）。由写文件原子性保证。
+  const tmp = file + '.tmp';
+  try {
+    fs.writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf-8');
+    fs.renameSync(tmp, file);
+    return true;
+  } catch (e) { return false; }
+}
+
 async function callAI(settings, systemPrompt, userPrompt, options) {
   const apiKey = settings.apiKey || '';
   const apiEndpoint = settings.apiEndpoint || '';
@@ -163,12 +223,14 @@ async function callAI(settings, systemPrompt, userPrompt, options) {
 
 function validateContentLocal(content, projectId) {
   const violations = [];
-  if (!content) return { valid: true, total_violations: 0, blocked: 0, violations };
+  if (!content) return { valid: true, total_violations: 0, blocked: 0, warned: 0, violations };
+  // 功能开关：如果规则引擎被关闭，直接跳过
+  if (getToggle('rules') === false) return { valid: true, total_violations: 0, blocked: 0, warned: 0, skipped: true, violations };
   const text = String(content);
-  // 1 全局禁词（关键词模式，避免外部依赖）
+  // 1 全局禁词（关键词模式）
   const blockPatterns = [
-    { pat: /(?:色情|淫秽|强奸|性交易|嫖妓|性侵)/gi, note: '禁止色情内容' },
-    { pat: /(?:血腥|碎尸|脑浆|内脏飞溅|血腥暴力)/gi, note: '禁止血腥描写' },
+    { pat: /(?:色情|淫秽|强奸|性交易|嫖妓|性侵|卖淫)/gi, note: '禁止色情内容' },
+    { pat: /(?:血腥|碎尸|脑浆|内脏飞溅|血腥暴力|肢解)/gi, note: '禁止血腥描写' },
     { pat: /(?:种族歧视|种族主义|歧视性言论|希特勒|纳粹|法西斯)/gi, note: '禁止歧视/政治敏感' }
   ];
   for (const p of blockPatterns) {
@@ -176,25 +238,26 @@ function validateContentLocal(content, projectId) {
     if (m) violations.push({ rule: 'global:block', level: 'block', note: p.note, hits: m.slice(0, 5) });
   }
   const warnPatterns = [
-    { pat: /(?:赌博|赌场|下注|高利贷)/gi, note: '赌博相关提示' },
-    { pat: /(?:毒品|海洛因|大麻|冰毒)/gi, note: '毒品相关提示' },
-    { pat: /(?:自杀|自残|跳楼|割腕)/gi, note: '自杀/自残提示' }
+    { pat: /(?:赌博|赌场|下注|高利贷|赌马|博彩)/gi, note: '赌博相关提示' },
+    { pat: /(?:毒品|海洛因|大麻|冰毒|摇头丸|可卡因)/gi, note: '毒品相关提示' },
+    { pat: /(?:自杀|自残|跳楼|割腕|上吊|吞药)/gi, note: '自杀/自残提示' }
   ];
   for (const p of warnPatterns) {
     const m = text.match(p.pat);
     if (m) violations.push({ rule: 'global:warn', level: 'warn', note: p.note, hits: m.slice(0, 5) });
   }
-  // 2 项目题材
+  // 2 项目题材规则 (从 projects.json 读取)
   try {
     const pdata = readJSON(jsonPath('projects'), { projects: [] });
     const project = (pdata.projects || []).find(p => p.id === projectId);
     if (project && project.genre) {
       const g = String(project.genre);
       const conflictChecks = [
-        { genre: '玄幻', patterns: [{ regex: /(?:微信|支付宝|手机|app|互联网|电脑)/gi, note: '玄幻混入现代科技元素' }] },
-        { genre: '都市', patterns: [{ regex: /(?:修仙|灵气|宗门|金丹|元婴)/gi, note: '都市混入修仙元素' }] },
-        { genre: '科幻', patterns: [{ regex: /(?:修仙|灵气|宗门|金丹|元婴)/gi, note: '科幻混入修仙元素' }] },
-        { genre: '言情', patterns: [{ regex: /(?:怒吼|大骂|暴打|血腥|砍|打)/gi, note: '言情出现过多暴力' }] }
+        { genre: '玄幻', patterns: [{ regex: /(?:微信|支付宝|手机|app|互联网|电脑|Wi-Fi|wifi)/gi, note: '玄幻混入现代科技元素' }] },
+        { genre: '修仙', patterns: [{ regex: /(?:微信|支付宝|手机|app|互联网|电脑|Wi-Fi|wifi)/gi, note: '修仙混入现代科技元素' }] },
+        { genre: '都市', patterns: [{ regex: /(?:修仙|灵气|宗门|金丹|元婴|渡劫)/gi, note: '都市混入修仙元素' }] },
+        { genre: '科幻', patterns: [{ regex: /(?:修仙|灵气|宗门|金丹|元婴|渡劫)/gi, note: '科幻混入修仙元素' }] },
+        { genre: '言情', patterns: [{ regex: /(?:怒吼|大骂|暴打|血腥|砍死|打死)/gi, note: '言情出现过多暴力' }] }
       ];
       for (const c of conflictChecks) {
         if (g.indexOf(c.genre) >= 0) {
@@ -206,7 +269,7 @@ function validateContentLocal(content, projectId) {
       }
     }
   } catch (_) {}
-  // 3 自定义规则
+  // 3 自定义规则 (rules.json)
   try {
     const r = readJSON(path.join(DATA_DIR, 'rules.json'), { custom: [] });
     if (Array.isArray(r.custom)) {
@@ -224,7 +287,7 @@ function validateContentLocal(content, projectId) {
     }
   } catch (_) {}
   const blocked = violations.filter(v => v.level === 'block').length;
-  return { valid: blocked === 0, total_violations: violations.length, blocked, warned: violations.filter(v => v.level === 'warn').length, violations };
+  return { valid: blocked === 0, total_violations: violations.length, blocked, warned: violations.filter(v => v.level === 'warn').length, suggested: violations.filter(v => v.level === 'suggest').length, violations };
 }
 
 function buildContextSystemPrompt(projectId, style, language, extraContext, ragQueryHint) {
@@ -432,7 +495,8 @@ function startServer() {
 
   // 健康检查 & 数据目录
   app.get('/api/health', (req, res) => {
-    res.json({
+    const t = getToggle();
+    const data = {
       status: 'ok',
       version: app.getVersion ? app.getVersion() : '3.5.0',
       dataDir: DATA_DIR,
@@ -440,9 +504,27 @@ function startServer() {
       timestamp: new Date().toISOString(),
       features: ['projects', 'materials', 'characters', 'chapters', 'ai-chapter',
         'knowledge-graph', 'foreshadow', 'analysis', 'rules-engine',
-        'prompts', 'models', 'rag', 'event-bus', 'feature-toggles',
-        'character-memory']
-    });
+        'prompts', 'models', 'rag', 'event-bus', 'feature-toggles', 'character-memory'],
+      feature_status: {
+        rag: t.rag, rules_engine: t.rules, analysis: t.analysis,
+        foreshadow: t.foreshadow, event_bus: t.event_bus, character_memory: t.character_memory,
+        prompts: t.prompts
+      }
+    };
+    // 可选的数据统计（非阻塞）
+    try {
+      const p = readJSON(jsonPath('projects'), { projects: [] });
+      const c = readJSON(jsonPath('chapters'), { chapters: [] });
+      const ch = readJSON(jsonPath('characters'), { characters: [] });
+      const m = readJSON(jsonPath('materials'), { materials: [] });
+      data.data_counts = {
+        projects: (p.projects || []).length,
+        chapters: (c.chapters || []).length,
+        characters: (ch.characters || []).length,
+        materials: (m.materials || []).length
+      };
+    } catch(_) {}
+    res.json(data);
   });
   app.get('/api/data-path', (req, res) => { res.json({ dataDir: DATA_DIR }); });
 
@@ -842,7 +924,9 @@ function startServer() {
       content: c.content || '', tags: c.tags || [], category: c.category || 'supporting',
       level: c.level || 'B', motivation: c.motivation || '', power: c.power || [],
       intro_chapter: c.intro_chapter || null, current_status: c.current_status || 'active',
-      memory_notes: c.memory_notes || [],
+      plot_arc: c.plot_arc || '', personality_tags: c.personality_tags || [],
+      relation_snapshot: c.relation_snapshot || [], memory: c.memory || '',
+      ooc_check: c.ooc_check || [], memory_notes: c.memory_notes || [],
       createdAt: now, updatedAt: now
     }));
     data.characters.push(...list);
@@ -2196,6 +2280,63 @@ function startServer() {
     return score;
   }
 
+  // 内部 ingest 辅助函数（供事件总线调用）
+  function ingestChapterInline(chapterId) {
+    try {
+      const ch = (readJSON(path.join(DATA_DIR, 'chapters.json'), { chapters: [] }).chapters || []).find(x => x.id === chapterId);
+      if (!ch) return { ok: false, error: '章节不存在' };
+      const v = readJSON(path.join(DATA_DIR, 'vectors.json'), { chunks: [] });
+      if (!Array.isArray(v.chunks)) v.chunks = [];
+      const paragraphs = (ch.content || '').split(/\n{2,}/).filter(p => p.trim().length > 20);
+      const chunks = [];
+      for (let i = 0; i < paragraphs.length; i++) {
+        chunks.push({
+          id: 'vec_ch_' + ch.id + '_' + i, project_id: ch.project_id, source: 'chapter', source_id: ch.id,
+          title: '第' + (ch.chapter_no || '') + '章 - 片段' + (i + 1), category: 'chapter',
+          content: paragraphs[i].slice(0, 2000), vector: null, createdAt: new Date().toISOString()
+        });
+      }
+      v.chunks = v.chunks.filter(c => c.source !== 'chapter' || c.source_id !== ch.id).concat(chunks);
+      writeJSON(path.join(DATA_DIR, 'vectors.json'), v);
+      return { ok: true, chunks_ingested: chunks.length };
+    } catch (e) { return { ok: false, error: e.message }; }
+  }
+  function ingestMaterialInline(materialId) {
+    try {
+      const m = (readJSON(path.join(DATA_DIR, 'materials.json'), { materials: [] }).materials || []).find(x => x.id === materialId);
+      if (!m) return { ok: false, error: '素材不存在' };
+      const v = readJSON(path.join(DATA_DIR, 'vectors.json'), { chunks: [] });
+      if (!Array.isArray(v.chunks)) v.chunks = [];
+      const chunk = {
+        id: 'vec_mat_' + m.id + '_' + Date.now(),
+        project_id: m.project_id, source: 'material', source_id: m.id,
+        title: m.name || '', category: m.category || 'setting',
+        content: (m.content || '').slice(0, 2000), vector: null, createdAt: new Date().toISOString()
+      };
+      v.chunks = v.chunks.filter(c => c.source !== 'material' || c.source_id !== m.id).concat(chunk);
+      writeJSON(path.join(DATA_DIR, 'vectors.json'), v);
+      return { ok: true, chunks_ingested: 1 };
+    } catch (e) { return { ok: false, error: e.message }; }
+  }
+  function ingestCharacterInline(characterId) {
+    try {
+      const ch = (readJSON(path.join(DATA_DIR, 'characters.json'), { characters: [] }).characters || []).find(x => x.id === characterId);
+      if (!ch) return { ok: false, error: '角色不存在' };
+      const v = readJSON(path.join(DATA_DIR, 'vectors.json'), { chunks: [] });
+      if (!Array.isArray(v.chunks)) v.chunks = [];
+      const chunk = {
+        id: 'vec_char_' + ch.id + '_' + Date.now(),
+        project_id: ch.project_id, source: 'character', source_id: ch.id,
+        title: ch.name || '', category: 'character',
+        content: ((ch.personality || '') + ' ' + (ch.background || '') + ' ' + (ch.memory || '') + ' ' + (ch.content || '')).slice(0, 2000),
+        vector: null, createdAt: new Date().toISOString()
+      };
+      v.chunks = v.chunks.filter(c => c.source !== 'character' || c.source_id !== ch.id).concat(chunk);
+      writeJSON(path.join(DATA_DIR, 'vectors.json'), v);
+      return { ok: true, chunks_ingested: 1 };
+    } catch (e) { return { ok: false, error: e.message }; }
+  }
+
   // Level 1: 向量检索 - 使用 Node 内置 https（不依赖外部 npm 包）
   function vectorizeLocal(text, settings) {
     const endpoint = settings.vectorEndpoint || settings.apiEndpoint;
@@ -2242,8 +2383,14 @@ function startServer() {
 
   // 三级检索统一入口（供内部函数 buildContextSystemPrompt 调用，完全同步）
   function hybridRetrieveLocal(query, projectId, topK) {
-    const toggleData = readJSON(path.join(DATA_DIR, 'feature_toggles.json'), { toggles: {} });
-    const t = Object.assign({ rag: true, vector_enabled: true, graph: true, bm25_enabled: true, fallback_enabled: true }, toggleData.toggles || {});
+    if (!projectId) return { level: 'empty', used: [], query: query || '', results: [], warning: '未指定 project_id' };
+    if (getToggle('rag') === false) return { level: 'disabled', used: [], query: query || '', results: [], warning: 'RAG 已被关闭' };
+    const topKVal = Math.max(1, Math.min(50, topK || 8));
+    const vectorEnabled = getToggle('vector_enabled') !== false;
+    const graphEnabled = getToggle('graph') !== false;
+    const bm25Enabled = getToggle('bm25_enabled') !== false;
+    const fallbackEnabled = getToggle('fallback_enabled') !== false;
+
     const materials = (readJSON(path.join(DATA_DIR, 'materials.json'), { materials: [] }).materials || []).filter(m => m.project_id === projectId || m.project_id == null || m.project_id === undefined);
     const chapters = (readJSON(path.join(DATA_DIR, 'chapters.json'), { chapters: [] }).chapters || []).filter(c => c.project_id === projectId);
     const characters = (readJSON(path.join(DATA_DIR, 'characters.json'), { characters: [] }).characters || []).filter(c => c.project_id === projectId || c.project_id == null || c.project_id === undefined);
@@ -2256,27 +2403,26 @@ function startServer() {
     const seen = new Set();
     const add = (r) => { if (r && r.id && !seen.has(r.id)) { seen.add(r.id); results.push(r); } };
 
-    // Level 1: 向量检索（查询 vectors.json 中带向量的 chunk，失败自动降级）
-    if (t.vector_enabled !== false) {
+    // Level 1: 向量检索（查询 vectors.json 中已 ingest 的 chunk）
+    if (vectorEnabled && qTokens.length > 0) {
       try {
         const vec = readJSON(path.join(DATA_DIR, 'vectors.json'), { chunks: [] });
-        const chunks = (vec.chunks || []).filter(c => c.project_id === projectId && Array.isArray(c.vector) && c.vector.length > 0);
-        if (chunks.length > 0 && qTokens.length > 0) {
-          // 用本地 tokenize 产生的词频作为简易"查询向量"的打分方式（因为同步嵌入返回 null）
+        const chunks = (vec.chunks || []).filter(c => c.project_id === projectId);
+        if (chunks.length > 0) {
           const qSet = new Set(qTokens);
           const vHits = chunks.map(c => {
             const tks = tokenizeRagLocal((c.title || '') + ' ' + (c.content || ''));
             let overlap = 0;
             for (const tk of tks) if (qSet.has(tk)) overlap += 1;
             return { chunk: c, overlap };
-          }).sort((a, b) => b.overlap - a.overlap).slice(0, Math.max(3, Math.floor(topK / 3))).filter(x => x.overlap > 0);
+          }).sort((a, b) => b.overlap - a.overlap).slice(0, Math.max(3, Math.floor(topKVal / 3))).filter(x => x.overlap > 0);
           for (const h of vHits) add({ id: h.chunk.id, title: h.chunk.title, content: h.chunk.content, category: h.chunk.category, level: 'vector', vector_score: h.overlap });
         }
       } catch (_) {}
     }
 
     // Level 2: 知识图谱 1 跳扩展
-    if (t.graph !== false) {
+    if (graphEnabled && qTokens.length > 0) {
       try {
         const kg = (readJSON(path.join(DATA_DIR, 'knowledge_graphs.json'), { graphs: {} }).graphs || {})[projectId];
         if (kg && kg.nodes && kg.nodes.length) {
@@ -2297,25 +2443,27 @@ function startServer() {
     }
 
     // Level 3: BM25 兜底
-    if (t.bm25_enabled !== false && docs.length > 0) {
+    if (bm25Enabled && docs.length > 0 && qTokens.length > 0) {
       const index = buildBm25Local(docs);
-      const scored = [];
-      for (let i = 0; i < index.N; i++) scored.push({ index: i, score: bm25ScoreLocal(i, qTokens, index) });
-      scored.sort((a, b) => b.score - a.score);
-      for (const s of scored.slice(0, topK * 2)) if (s.score > 0) add({ ...docs[s.index], level: 'bm25', bm25_score: s.score });
+      if (index && index.N > 0) {
+        const scored = [];
+        for (let i = 0; i < index.N; i++) scored.push({ index: i, score: bm25ScoreLocal(i, qTokens, index) });
+        scored.sort((a, b) => b.score - a.score);
+        for (const s of scored.slice(0, topKVal * 2)) if (s.score > 0) add({ ...docs[s.index], level: 'bm25', bm25_score: s.score });
+      }
     }
 
-    // 失败兜底：返回 topK 条最近素材
-    if (results.length === 0 && t.fallback_enabled !== false) {
-      const fallback = docs.slice(0, topK).map(d => ({ ...d, level: 'fallback' }));
-      return { level: 'fallback', used: ['fallback'], query, results: fallback, warning: '三级检索均无结果，已回退到最近素材注入' };
+    // 失败兜底
+    if (results.length === 0 && fallbackEnabled) {
+      const fallback = docs.slice(0, topKVal).map(d => ({ ...d, level: 'fallback' }));
+      return { level: 'fallback', used: ['fallback'], query: query || '', results: fallback, warning: '三级检索均无结果，已回退到最近素材注入' };
     }
-    const finalResults = results.slice(0, topK);
+    const finalResults = results.slice(0, topKVal);
     const usedArr = [];
     if (finalResults.some(r => r.level === 'vector')) usedArr.push('vector');
     if (finalResults.some(r => r.level === 'graph')) usedArr.push('graph');
     if (finalResults.some(r => r.level === 'bm25')) usedArr.push('bm25');
-    return { level: usedArr.join('+') || 'bm25', used: usedArr, query, results: finalResults };
+    return { level: usedArr.join('+') || 'bm25', used: usedArr, query: query || '', results: finalResults };
   }
 
   app.post('/api/rag/retrieve', (req, res) => {
@@ -2450,10 +2598,24 @@ function startServer() {
     if (eb.events.length > 500) eb.events = eb.events.slice(-500);
     writeJSON(path.join(DATA_DIR, 'event_bus.json'), eb);
 
-    // 内置响应：如果是章节保存/素材保存事件，触发 RAG 索引重建提示
+    // 内置响应：如果是章节保存/素材保存/角色保存事件，真正触发 ingest 到 vectors.json
     const actions = [];
-    if (event === 'chapter_saved' || event === 'material_saved' || event === 'character_saved') {
-      actions.push({ type: 'rag_index_dirty', note: 'RAG 索引标记为脏，下次检索时将自动重建' });
+    if (getToggle('event_bus') !== false && getToggle('rag') !== false) {
+      const pl = payload || {};
+      if (event === 'chapter_saved' && pl.chapter_id) {
+        const r = ingestChapterInline(pl.chapter_id);
+        actions.push({ type: 'ingest_chapter', chapter_id: pl.chapter_id, result: r });
+      }
+      if (event === 'material_saved' && pl.material_id) {
+        const r = ingestMaterialInline(pl.material_id);
+        actions.push({ type: 'ingest_material', material_id: pl.material_id, result: r });
+      }
+      if (event === 'character_saved' && pl.character_id) {
+        const r = ingestCharacterInline(pl.character_id);
+        actions.push({ type: 'ingest_character', character_id: pl.character_id, result: r });
+      }
+    } else {
+      actions.push({ type: 'skipped', note: 'event_bus 或 rag 已被关闭' });
     }
     res.json({ event_id: e.id, timestamp: ts, processed: true, auto_actions: actions });
   });

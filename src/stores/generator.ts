@@ -25,14 +25,15 @@ export interface GeneratorCategory {
 }
 
 const BUILTIN_CATEGORIES: GeneratorCategory[] = [
+  { id: 'all', name: '全部' },
   { id: 'outline', name: '大纲类' },
   { id: 'character', name: '人物类' },
   { id: 'worldview', name: '世界观类' },
   { id: 'plot', name: '情节类' },
   { id: 'dialogue', name: '对话类' },
-  { id: 'writing', name: '文风/润色类' },
+  { id: 'writing', name: '文风润色' },
+  { id: 'template', name: '爆文模板' },
   { id: 'tool', name: '工具类' },
-  { id: 'template', name: '爆文模板类' },
   { id: 'custom', name: '自定义' }
 ]
 
@@ -159,12 +160,25 @@ const BUILTIN_GENERATORS: Generator[] = [
   }
 ]
 
+export const CATEGORY_MAP: Record<string, string> = {
+  outline: '大纲类',
+  character: '人物类',
+  worldview: '世界观',
+  plot: '情节类',
+  dialogue: '对话类',
+  writing: '文风润色',
+  template: '爆文模板',
+  tool: '工具类',
+  custom: '自定义'
+}
+
 export const useGeneratorStore = defineStore('generator', () => {
   const generators = ref<Generator[]>([])
   const categories = ref<GeneratorCategory[]>(BUILTIN_CATEGORIES)
   const loading = ref(false)
   const generating = ref(false)
   const lastResult = ref('')
+  const lastError = ref('')
 
   const generatorsByCategory = computed(() => {
     const grouped: Record<string, Generator[]> = {}
@@ -175,41 +189,46 @@ export const useGeneratorStore = defineStore('generator', () => {
     return grouped
   })
 
-  async function fetchGenerators(category?: string) {
+  async function fetchGenerators(category?: string): Promise<Generator[]> {
     loading.value = true
     try {
       const response = await api.get('/api/generators')
-      // 合并内置生成器 + 用户自定义生成器
       const customGens: Generator[] = Array.isArray(response.data) ? response.data : []
       const all = [...BUILTIN_GENERATORS, ...customGens]
-      if (category) {
+      if (category && category !== 'all') {
         generators.value = all.filter(g => g.category === category)
       } else {
         generators.value = all
       }
-    } catch (error) {
-      // 失败时只显示内置
-      generators.value = category ? BUILTIN_GENERATORS.filter(g => g.category === category) : BUILTIN_GENERATORS
-      console.error('获取生成器列表失败:', error)
+      return generators.value
+    } catch (err) {
+      // 即使失败也显示内置
+      generators.value = category && category !== 'all'
+        ? BUILTIN_GENERATORS.filter(g => g.category === category)
+        : BUILTIN_GENERATORS
+      console.error('获取生成器列表失败:', err)
+      return generators.value
     } finally {
       loading.value = false
     }
   }
 
-  async function fetchCategories() {
+  async function fetchCategories(): Promise<GeneratorCategory[]> {
     try {
       const response = await api.get('/api/generators/categories')
-      if (Array.isArray(response.data) && response.data.length > 0) {
-        categories.value = [...BUILTIN_CATEGORIES, ...response.data]
+      const data = Array.isArray(response.data) ? response.data : []
+      if (data.length > 0) {
+        categories.value = [...BUILTIN_CATEGORIES, ...data]
       } else {
         categories.value = BUILTIN_CATEGORIES
       }
-    } catch (_error) {
+    } catch (_err) {
       categories.value = BUILTIN_CATEGORIES
     }
+    return categories.value
   }
 
-  async function createGenerator(data: Partial<Generator>) {
+  async function createGenerator(data: Partial<Generator>): Promise<Generator | null> {
     try {
       const response = await api.post('/api/generators', {
         ...data,
@@ -218,31 +237,31 @@ export const useGeneratorStore = defineStore('generator', () => {
       })
       generators.value.push(response.data)
       return response.data
-    } catch (error) {
-      console.error('创建生成器失败:', error)
+    } catch (err) {
+      console.error('创建生成器失败:', err)
       return null
     }
   }
 
-  async function updateGenerator(id: string, data: Partial<Generator>) {
+  async function updateGenerator(id: string, data: Partial<Generator>): Promise<Generator | null> {
     try {
       const response = await api.put(`/api/generators/${id}`, data)
-      const index = generators.value.findIndex(g => g.id === id)
-      if (index !== -1) generators.value[index] = response.data
+      const idx = generators.value.findIndex(g => g.id === id)
+      if (idx !== -1) generators.value[idx] = response.data
       return response.data
-    } catch (error) {
-      console.error('更新生成器失败:', error)
+    } catch (err) {
+      console.error('更新生成器失败:', err)
       return null
     }
   }
 
-  async function deleteGenerator(id: string) {
+  async function deleteGenerator(id: string): Promise<boolean> {
     try {
       await api.delete(`/api/generators/${id}`)
-      generators.value = generators.value.filter(g => g.id !== id)
+      generators.value = generators.value.filter(g => g.id !== id || !g.isCustom)
       return true
-    } catch (error) {
-      console.error('删除生成器失败:', error)
+    } catch (err) {
+      console.error('删除生成器失败:', err)
       return false
     }
   }
@@ -252,8 +271,9 @@ export const useGeneratorStore = defineStore('generator', () => {
     params: Record<string, string>,
     projectId?: string,
     withProjectMaterial = false
-  ) {
+  ): Promise<string> {
     generating.value = true
+    lastError.value = ''
     lastResult.value = ''
     try {
       const response = await api.post('/api/generators/generate', {
@@ -262,15 +282,21 @@ export const useGeneratorStore = defineStore('generator', () => {
         project_id: projectId,
         with_project_material: withProjectMaterial
       })
-      lastResult.value = response.data.generated_text
-      return response.data
-    } catch (error: any) {
-      console.error('生成失败:', error)
-      const msg = error?.response?.data?.error || error?.message || '生成失败'
+      const text = response.data?.generated_text || String(response.data || '')
+      lastResult.value = text
+      return text
+    } catch (err: any) {
+      const msg = err?.response?.data?.error || err?.message || '生成失败'
+      lastError.value = msg
+      console.error('生成失败:', err)
       throw new Error(msg)
     } finally {
       generating.value = false
     }
+  }
+
+  function getById(id: string): Generator | undefined {
+    return generators.value.find(g => g.id === id) || BUILTIN_GENERATORS.find(g => g.id === id)
   }
 
   function setLastResult(text: string) {
@@ -283,6 +309,7 @@ export const useGeneratorStore = defineStore('generator', () => {
     loading,
     generating,
     lastResult,
+    lastError,
     generatorsByCategory,
     fetchGenerators,
     fetchCategories,
@@ -290,8 +317,10 @@ export const useGeneratorStore = defineStore('generator', () => {
     updateGenerator,
     deleteGenerator,
     generate,
+    getById,
     setLastResult,
     BUILTIN_GENERATORS,
-    BUILTIN_CATEGORIES
+    BUILTIN_CATEGORIES,
+    CATEGORY_MAP
   }
 })

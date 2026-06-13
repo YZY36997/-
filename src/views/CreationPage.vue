@@ -1,353 +1,332 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, watch } from 'vue'
-import { useRoute } from 'vue-router'
+import { ElMessage } from 'element-plus'
+import { FolderOpen, Search, Edit, Plus, FileText, BookOpen } from 'lucide-vue-next'
+import { useRoute, useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
-import { useMaterialStore } from '@/stores/material'
-import { useGeneratorStore } from '@/stores/generator'
-import { ElMessage, ElMessageBox } from 'element-plus'
-import {
-  Edit,
-  FolderOpened,
-  Refresh,
-  Delete,
-  Connection,
-  Document,
-  Plus
-} from '@element-plus/icons-vue'
+import { useMaterialStore, CATEGORY_LABELS } from '@/stores/material'
+import { useGeneratorStore, CATEGORY_MAP as GEN_CATEGORY_MAP } from '@/stores/generator'
 
 const route = useRoute()
+const router = useRouter()
 const projectStore = useProjectStore()
 const materialStore = useMaterialStore()
 const generatorStore = useGeneratorStore()
 
-const drawerVisible = ref(false)
 const content = ref('')
 const promptInput = ref('')
 const generatedResult = ref('')
 const withMaterialLink = ref(true)
 
 const selectedGenerator = ref<any>(null)
-const generatorParams = ref<Record<string, string>>({})
+const generatorParams = ref<Record<string, string>>({ input: '' })
 const generating = ref(false)
-const categoryTag = ref('')
 
-const currentProjectId = computed(() => route.params.projectId as string || null)
+const projectId = computed(() => route.params.projectId as string || null)
 
-onMounted(async () => {
+const projectMaterials = computed(() => {
+  if (!projectId.value) return materialStore.materials
+  return materialStore.materials.filter(m => m.project_id === projectId.value)
+})
+
+const projectCharacters = computed(() => projectMaterials.value.filter((m: any) => m.category === 'character'))
+const projectWorldviews = computed(() => projectMaterials.value.filter((m: any) => m.category === 'worldview'))
+
+const genCategoriesForSelect = computed(() =>
+  generatorStore.categories.filter((c: any) => c.id !== 'all')
+)
+
+async function loadAll() {
   await projectStore.fetchProjects()
-  await materialStore.fetchGlobalMaterials()
-  await materialStore.fetchMaterials()
   await generatorStore.fetchGenerators()
   await generatorStore.fetchCategories()
 
-  if (currentProjectId.value) {
-    await projectStore.fetchProject(currentProjectId.value)
-    await materialStore.fetchMaterials(currentProjectId.value)
+  if (projectId.value) {
+    await projectStore.fetchProject(projectId.value)
+    await materialStore.fetchMaterials(projectId.value)
+  } else {
+    await materialStore.fetchGlobalMaterials()
+    await materialStore.fetchMaterials()
+  }
+}
+
+onMounted(loadAll)
+
+watch(() => route.params.projectId, () => {
+  if (projectId.value) {
+    projectStore.fetchProject(projectId.value)
+    materialStore.fetchMaterials(projectId.value)
   }
 })
 
-watch(currentProjectId, async (newId) => {
-  if (newId) {
-    await projectStore.fetchProject(newId)
-    await materialStore.fetchMaterials(newId)
+function selectGenerator(gen: any) {
+  selectedGenerator.value = gen
+  // 解析模板中的变量
+  const template = gen.userPromptTemplate || ''
+  const params: Record<string, string> = {}
+  const regex = /\{(\w+)\}/g
+  let match
+  while ((match = regex.exec(template)) !== null) {
+    params[match[1]] = ''
   }
-})
-
-const projectMaterials = computed(() => {
-  if (!currentProjectId.value) return []
-  return materialStore.materials.filter(m => m.project_id === currentProjectId.value)
-})
-
-const projectCharacters = computed(() => {
-  return projectMaterials.value.filter(m => m.category === 'character')
-})
-
-const projectWorldviews = computed(() => {
-  return projectMaterials.value.filter(m => m.category === 'worldview')
-})
-
-function toggleDrawer() {
-  drawerVisible.value = !drawerVisible.value
+  // 提供默认 input
+  if (!params.input) params.input = ''
+  if (projectStore.currentProject) {
+    params.genre = params.genre || projectStore.currentProject.settings?.genre || '玄幻'
+    params.style = params.style || projectStore.currentProject.settings?.style || '爽文风'
+  }
+  generatorParams.value = params
+  promptInput.value = template
 }
 
-function insertMaterial(material: any) {
-  content.value += `\n\n【${material.name}】\n${material.content}`
-  ElMessage.success('已插入素材')
+function insertMaterialToContent(m: any) {
+  content.value += `\n\n【${m.name}】\n${m.content}\n`
+  ElMessage.success('已插入到正文')
 }
 
-function injectToPrompt(material: any) {
-  promptInput.value += `\n\n【${material.name}】\n${material.content}`
-  ElMessage.success('已注入到提示词')
-}
-
-function selectGenerator(generator: any) {
-  selectedGenerator.value = generator
-  generatorParams.value = {}
-  promptInput.value = generator.userPromptTemplate
+function injectToPrompt(m: any) {
+  promptInput.value += `\n\n【${m.name}】\n${m.content}`
+  ElMessage.success('已注入到生成提示')
 }
 
 async function startGenerate() {
   if (!selectedGenerator.value) {
-    ElMessage.warning('请选择生成器')
+    ElMessage.warning('请先选择一个生成器')
     return
   }
-
   generating.value = true
   generatedResult.value = ''
-
   try {
-    const result = await generatorStore.generate(
+    const text = await generatorStore.generate(
       selectedGenerator.value.id,
       generatorParams.value,
-      currentProjectId.value || undefined,
+      projectId.value || undefined,
       withMaterialLink.value
     )
-    generatedResult.value = result.generated_text
-    ElMessage.success('生成完成')
-  } catch (error: any) {
-    ElMessage.error(error.response?.data?.error || '生成失败')
+    generatedResult.value = text
+    ElMessage.success('生成成功')
+  } catch (err: any) {
+    ElMessage.error(err.message || '生成失败')
   } finally {
     generating.value = false
   }
 }
 
-async function saveResultAsMaterial() {
+async function saveAsMaterial() {
   if (!generatedResult.value) {
     ElMessage.warning('没有可保存的内容')
     return
   }
+  await materialStore.createMaterial({
+    name: `${selectedGenerator.value?.name || 'AI'}生成 - ${new Date().toLocaleTimeString()}`,
+    content: generatedResult.value,
+    category: selectedGenerator.value?.category === 'outline' || selectedGenerator.value?.category === 'plot' ? 'plot' : 'setting',
+    project_id: projectId.value
+  })
+  ElMessage.success('已保存到素材库')
+  loadAll()
+}
 
-  const name = await ElMessageBox.prompt('请输入素材名称', {
-    inputValue: 'AI生成素材'
-  }).then(({ value }) => value)
+function copyResult() {
+  if (!generatedResult.value) return
+  navigator.clipboard.writeText(generatedResult.value)
+  ElMessage.success('已复制到剪贴板')
+}
 
-  if (name) {
-    await materialStore.createMaterial({
-      name,
-      content: generatedResult.value,
-      category: 'setting',
-      project_id: currentProjectId.value
-    })
-    ElMessage.success('已保存到素材库')
-  }
+function goToMaterials() {
+  router.push({ name: 'material-center' })
+}
+
+function getGenCategoryName(id: string): string {
+  return GEN_CATEGORY_MAP[id] || id
 }
 </script>
 
 <template>
   <div class="creation-page">
-    <!-- 顶部项目信息 -->
-    <div v-if="projectStore.currentProject" class="project-bar">
+    <!-- 项目信息栏 -->
+    <div class="project-bar">
       <div class="project-info">
-        <el-icon><FolderOpened /></el-icon>
-        <span class="project-name">{{ projectStore.currentProject.name }}</span>
-        <el-tag size="small">{{ projectStore.currentProject.settings?.genre }}</el-tag>
+        <el-icon size="18"><FolderOpen /></el-icon>
+        <span class="project-name">
+          {{ projectStore.currentProject ? projectStore.currentProject.name : '未选择项目' }}
+        </span>
+        <el-tag v-if="projectStore.currentProject" size="small" type="success">
+          {{ projectStore.currentProject.settings?.genre }}
+        </el-tag>
+        <el-tag v-else size="small" type="info">请先选择项目</el-tag>
       </div>
       <div class="project-actions">
         <el-switch
           v-model="withMaterialLink"
-          active-text="素材联动"
-          inactive-text=""
+          active-text="关联项目素材"
+          inactive-text="不关联"
         />
-        <el-button @click="toggleDrawer">
-          <el-icon><Connection /></el-icon>
-          素材面板
+        <el-button @click="goToMaterials">
+          <el-icon><BookOpen /></el-icon>管理素材
         </el-button>
       </div>
     </div>
 
     <div class="creation-content">
-      <!-- 左侧创作区 -->
+      <!-- 左侧:创作区 -->
       <div class="editor-area">
-        <el-tabs>
-          <el-tab-pane label="正文创作">
-            <el-input
-              v-model="content"
-              type="textarea"
-              :rows="20"
-              placeholder="在这里开始你的创作..."
-              class="content-editor"
-            />
-          </el-tab-pane>
-          <el-tab-pane label="提示词">
-            <el-input
-              v-model="promptInput"
-              type="textarea"
-              :rows="10"
-              placeholder="输入AI生成提示词..."
-              class="prompt-editor"
-            />
-          </el-tab-pane>
-        </el-tabs>
+        <div class="editor-tabs">
+          <div class="tab active">正文创作</div>
+          <div class="tab">提示词模板</div>
+        </div>
+        <el-input
+          v-model="content"
+          type="textarea"
+          :rows="12"
+          placeholder="在这里开始你的创作...&#10;可以从右侧项目素材中插入人物设定、世界观、剧情桥段等"
+          class="main-editor"
+        />
 
-        <!-- AI生成结果 -->
-        <div v-if="generatedResult" class="generated-result">
+        <!-- 生成结果 -->
+        <div v-if="generatedResult" class="result-area">
           <div class="result-header">
-            <span>生成结果</span>
-            <el-button size="small" @click="saveResultAsMaterial">
-              <el-icon><Document /></el-icon>
-              保存为素材
-            </el-button>
+            <span>
+              <el-icon><FileText /></el-icon>
+              生成结果
+            </span>
+            <div class="result-actions">
+              <el-button size="small" @click="copyResult">复制</el-button>
+              <el-button size="small" type="primary" @click="saveAsMaterial">
+                <el-icon><Plus /></el-icon>保存为素材
+              </el-button>
+            </div>
           </div>
-          <el-input
-            v-model="generatedResult"
-            type="textarea"
-            :rows="10"
-            readonly
-          />
+          <div class="result-content">{{ generatedResult }}</div>
         </div>
       </div>
 
-      <!-- 右侧生成器面板 -->
-      <div class="generator-panel">
-        <h3 class="panel-title">AI生成器</h3>
+      <!-- 右侧:生成器与素材 -->
+      <div class="right-panel">
+        <!-- 生成器选择 -->
+        <div class="generator-section">
+          <h3 class="section-title">AI 生成器</h3>
 
-        <div class="generator-categories">
-          <el-tag
-            v-for="cat in generatorStore.categories"
-            :key="cat.id"
-            :type="selectedGenerator?.category === cat.id ? 'primary' : 'info'"
-            class="category-tag"
-            @click="categoryTag = cat.id"
-          >
-            {{ cat.name }}
-          </el-tag>
-        </div>
+          <el-select v-if="selectedGenerator" v-model="selectedGenerator.id" placeholder="选择生成器..." @change="(id: string) => { const g = generatorStore.generators.find(x => x.id === id); if (g) selectGenerator(g) }" style="width: 100%; margin-bottom: 12px">
+            <el-option-group v-for="cat in genCategoriesForSelect" :key="cat.id" :label="cat.name">
+              <el-option
+                v-for="g in generatorStore.generators.filter((gen: any) => gen.category === cat.id)"
+                :key="g.id"
+                :label="g.name"
+                :value="g.id"
+              />
+            </el-option-group>
+          </el-select>
 
-        <div class="generator-list">
-          <div
-            v-for="gen in generatorStore.generators"
-            :key="gen.id"
-            class="generator-item"
-            :class="{ active: selectedGenerator?.id === gen.id }"
-            @click="selectGenerator(gen)"
-          >
-            <div class="generator-name">{{ gen.name }}</div>
-            <div class="generator-desc">{{ gen.description }}</div>
+          <div v-else class="gen-grid">
+            <div
+              v-for="g in generatorStore.generators.slice(0, 12)"
+              :key="g.id"
+              class="gen-card"
+              @click="selectGenerator(g)"
+            >
+              <div class="gen-title">{{ g.name }}</div>
+              <div class="gen-category">{{ getGenCategoryName(g.category) }}</div>
+            </div>
+          </div>
+
+          <!-- 参数输入 -->
+          <div v-if="selectedGenerator" class="params-area">
+            <div class="current-gen">
+              <span class="label">当前生成器:</span>
+              <span class="gen-name">{{ selectedGenerator.name }}</span>
+              <el-tag size="small" type="success">{{ getGenCategoryName(selectedGenerator.category) }}</el-tag>
+            </div>
+            <p class="gen-hint">{{ selectedGenerator.description }}</p>
+
+            <div v-for="(value, key) in generatorParams" :key="key" class="param-row">
+              <label>{{ key }}</label>
+              <el-input
+                v-model="generatorParams[key]"
+                type="textarea"
+                :rows="key === 'input' || key === 'requirement' ? 3 : 1"
+                :placeholder="`请输入 ${key}`"
+              />
+            </div>
+
+            <el-button
+              type="primary"
+              :loading="generating"
+              size="large"
+              style="width: 100%; margin-top: 12px"
+              @click="startGenerate"
+            >
+              {{ generating ? '正在生成...' : '✨ 开始生成' }}
+            </el-button>
+          </div>
+
+          <div v-else class="gen-hint">
+            <el-empty description="请在上方选择一个生成器开始创作" :image-size="80" />
           </div>
         </div>
 
-        <div v-if="selectedGenerator" class="generate-form">
-          <h4>{{ selectedGenerator.name }}</h4>
-          <p class="generator-hint">请在下方输入生成参数</p>
-          <el-input
-            v-model="generatorParams.input"
-            type="textarea"
-            :rows="4"
-            :placeholder="selectedGenerator.userPromptTemplate"
-          />
-          <el-button
-            type="primary"
-            :loading="generating"
-            @click="startGenerate"
-            style="margin-top: 12px; width: 100%"
-          >
-            {{ generating ? '生成中...' : '开始生成' }}
-          </el-button>
+        <!-- 项目素材 -->
+        <div class="materials-section">
+          <h3 class="section-title">项目素材</h3>
+          <div v-if="projectCharacters.length > 0" class="mat-group">
+            <div class="group-title">人物角色</div>
+            <div v-for="m in projectCharacters.slice(0, 5)" :key="m.id" class="mat-chip">
+              <span class="mat-name">{{ m.name }}</span>
+              <div class="mat-ops">
+                <el-button size="small" link type="primary" @click="insertMaterialToContent(m)">插入</el-button>
+                <el-button size="small" link type="success" @click="injectToPrompt(m)">注入</el-button>
+              </div>
+            </div>
+          </div>
+          <div v-if="projectWorldviews.length > 0" class="mat-group">
+            <div class="group-title">世界观</div>
+            <div v-for="m in projectWorldviews.slice(0, 5)" :key="m.id" class="mat-chip">
+              <span class="mat-name">{{ m.name }}</span>
+              <div class="mat-ops">
+                <el-button size="small" link type="primary" @click="insertMaterialToContent(m)">插入</el-button>
+                <el-button size="small" link type="success" @click="injectToPrompt(m)">注入</el-button>
+              </div>
+            </div>
+          </div>
+          <div v-if="projectMaterials.length === 0" class="empty-hint">
+            <el-empty description="暂无项目素材" :image-size="60">
+              <el-button size="small" @click="goToMaterials">去创建</el-button>
+            </el-empty>
+          </div>
         </div>
       </div>
     </div>
-
-    <!-- 右侧素材抽屉 -->
-    <el-drawer v-model="drawerVisible" title="素材面板" direction="rtl" size="350px">
-      <div class="drawer-content">
-        <el-tabs>
-          <el-tab-pane label="全局素材">
-            <div class="material-section">
-              <div class="material-group">
-                <div class="group-title">人物</div>
-                <div
-                  v-for="m in materialStore.globalMaterials.filter(m => m.category === 'character')"
-                  :key="m.id"
-                  class="material-item"
-                >
-                  <span class="material-name">{{ m.name }}</span>
-                  <div class="material-actions">
-                    <el-button size="small" link @click="insertMaterial(m)">插入</el-button>
-                    <el-button size="small" link @click="injectToPrompt(m)">注入</el-button>
-                  </div>
-                </div>
-              </div>
-              <div class="material-group">
-                <div class="group-title">世界观</div>
-                <div
-                  v-for="m in materialStore.globalMaterials.filter(m => m.category === 'worldview')"
-                  :key="m.id"
-                  class="material-item"
-                >
-                  <span class="material-name">{{ m.name }}</span>
-                  <div class="material-actions">
-                    <el-button size="small" link @click="insertMaterial(m)">插入</el-button>
-                    <el-button size="small" link @click="injectToPrompt(m)">注入</el-button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </el-tab-pane>
-
-          <el-tab-pane v-if="currentProjectId" label="项目素材">
-            <div class="material-section">
-              <div class="material-group">
-                <div class="group-title">人物</div>
-                <div
-                  v-for="m in projectCharacters"
-                  :key="m.id"
-                  class="material-item"
-                >
-                  <span class="material-name">{{ m.name }}</span>
-                  <div class="material-actions">
-                    <el-button size="small" link @click="insertMaterial(m)">插入</el-button>
-                    <el-button size="small" link @click="injectToPrompt(m)">注入</el-button>
-                  </div>
-                </div>
-              </div>
-              <div class="material-group">
-                <div class="group-title">世界观</div>
-                <div
-                  v-for="m in projectWorldviews"
-                  :key="m.id"
-                  class="material-item"
-                >
-                  <span class="material-name">{{ m.name }}</span>
-                  <div class="material-actions">
-                    <el-button size="small" link @click="insertMaterial(m)">插入</el-button>
-                    <el-button size="small" link @click="injectToPrompt(m)">注入</el-button>
-                  </div>
-                </div>
-              </div>
-            </div>
-          </el-tab-pane>
-        </el-tabs>
-      </div>
-    </el-drawer>
   </div>
 </template>
 
 <style scoped>
 .creation-page {
-  height: calc(100vh - 100px);
+  padding: 0 20px;
+  height: calc(100vh - 120px);
   display: flex;
   flex-direction: column;
 }
 
 .project-bar {
   background: #fff;
+  border-radius: 12px;
   padding: 12px 20px;
-  border-radius: 8px;
-  margin-bottom: 16px;
   display: flex;
   justify-content: space-between;
   align-items: center;
+  margin-bottom: 16px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
 }
 
 .project-info {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 10px;
 }
 
 .project-name {
   font-weight: 600;
-  color: #333;
+  color: #1a1a2e;
 }
 
 .project-actions {
@@ -358,33 +337,51 @@ async function saveResultAsMaterial() {
 
 .creation-content {
   flex: 1;
-  display: flex;
+  display: grid;
+  grid-template-columns: 1fr 380px;
   gap: 16px;
-  min-height: 0;
+  overflow: hidden;
 }
 
 .editor-area {
-  flex: 1;
   background: #fff;
-  border-radius: 8px;
-  padding: 16px;
+  border-radius: 12px;
+  padding: 20px;
   display: flex;
   flex-direction: column;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+  overflow: hidden;
 }
 
-.content-editor {
+.editor-tabs {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+  border-bottom: 1px solid #f0f0f5;
+}
+
+.editor-tabs .tab {
+  padding: 10px 16px;
+  cursor: pointer;
+  color: #888;
+  font-size: 14px;
+}
+
+.editor-tabs .tab.active {
+  color: #409eff;
+  border-bottom: 2px solid #409eff;
+  margin-bottom: -1px;
+  font-weight: 600;
+}
+
+.main-editor {
   flex: 1;
+  min-height: 280px;
 }
 
-.content-editor :deep(.el-textarea__inner) {
-  font-size: 16px;
-  line-height: 1.8;
-  resize: none;
-}
-
-.generated-result {
-  margin-top: 16px;
-  border-top: 1px solid #eee;
+.result-area {
+  margin-top: 20px;
+  border-top: 1px solid #f0f0f5;
   padding-top: 16px;
 }
 
@@ -392,119 +389,151 @@ async function saveResultAsMaterial() {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 8px;
-  color: #667eea;
+  margin-bottom: 12px;
   font-weight: 600;
+  color: #409eff;
 }
 
-.generator-panel {
-  width: 320px;
-  background: #fff;
+.result-content {
+  background: #f8f9ff;
   border-radius: 8px;
   padding: 16px;
-  overflow-y: auto;
-}
-
-.panel-title {
-  font-size: 16px;
+  white-space: pre-wrap;
+  line-height: 1.8;
   color: #333;
-  margin: 0 0 16px 0;
-}
-
-.generator-categories {
-  display: flex;
-  flex-wrap: wrap;
-  gap: 8px;
-  margin-bottom: 16px;
-}
-
-.category-tag {
-  cursor: pointer;
-}
-
-.generator-list {
+  font-size: 14px;
   max-height: 300px;
   overflow-y: auto;
-  margin-bottom: 16px;
 }
 
-.generator-item {
-  padding: 12px;
-  border: 1px solid #eee;
-  border-radius: 4px;
-  margin-bottom: 8px;
+.right-panel {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  overflow-y: auto;
+}
+
+.generator-section,
+.materials-section {
+  background: #fff;
+  border-radius: 12px;
+  padding: 16px;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
+}
+
+.section-title {
+  font-size: 15px;
+  font-weight: 600;
+  color: #1a1a2e;
+  margin: 0 0 14px 0;
+  padding-left: 10px;
+  border-left: 3px solid #409eff;
+}
+
+.gen-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  margin-bottom: 14px;
+}
+
+.gen-card {
+  background: #f5f5ff;
+  border: 1px solid #e0e0f0;
+  border-radius: 8px;
+  padding: 10px;
   cursor: pointer;
   transition: all 0.2s;
 }
 
-.generator-item:hover {
-  border-color: #667eea;
+.gen-card:hover {
+  background: #e8e8ff;
+  border-color: #409eff;
+  transform: translateY(-2px);
 }
 
-.generator-item.active {
-  border-color: #667eea;
-  background: #f8f8ff;
-}
-
-.generator-name {
+.gen-title {
+  font-size: 13px;
   font-weight: 600;
   color: #333;
   margin-bottom: 4px;
 }
 
-.generator-desc {
-  font-size: 12px;
+.gen-category {
+  font-size: 11px;
+  color: #888;
+}
+
+.current-gen {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+
+.current-gen .label {
   color: #999;
-}
-
-.generate-form h4 {
-  margin: 0 0 8px 0;
-  color: #333;
-}
-
-.generator-hint {
   font-size: 12px;
-  color: #999;
-  margin-bottom: 12px;
 }
 
-.drawer-content {
-  height: 100%;
+.current-gen .gen-name {
+  font-weight: 600;
+  color: #1a1a2e;
 }
 
-.material-section {
-  max-height: 100%;
-  overflow-y: auto;
+.gen-hint {
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 14px;
 }
 
-.material-group {
-  margin-bottom: 16px;
+.param-row {
+  margin-bottom: 10px;
+}
+
+.param-row label {
+  display: block;
+  font-size: 12px;
+  color: #666;
+  margin-bottom: 4px;
+  text-transform: capitalize;
+}
+
+.mat-group {
+  margin-bottom: 14px;
 }
 
 .group-title {
-  font-size: 14px;
+  font-size: 12px;
   font-weight: 600;
-  color: #667eea;
+  color: #888;
   margin-bottom: 8px;
+  padding-left: 6px;
 }
 
-.material-item {
+.mat-chip {
+  background: #f8f9ff;
+  border: 1px solid #e0e0f0;
+  border-radius: 6px;
+  padding: 8px 10px;
+  margin-bottom: 6px;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  padding: 8px;
-  border: 1px solid #eee;
-  border-radius: 4px;
-  margin-bottom: 4px;
 }
 
-.material-name {
+.mat-name {
   font-size: 13px;
   color: #333;
+  font-weight: 500;
 }
 
-.material-actions {
+.mat-ops {
   display: flex;
-  gap: 4px;
+  gap: 6px;
+}
+
+.empty-hint {
+  padding: 20px 0;
 }
 </style>

@@ -208,4 +208,40 @@ router.get('/adjacency', async (req, res) => {
   res.json({ adjacency: adj, nodes: graph.nodes, edges: graph.edges });
 });
 
+// 自动解析文本抽取角色关系（简易规则版）
+router.post('/auto-parse', async (req, res) => {
+  const text = String(req.body.text || '');
+  if (!text.trim()) return res.status(400).json({ error: '缺少解析文本' });
+  const all = await readGraph();
+  const graph = getProjectGraph(all, req.body.project_id || null);
+
+  const existingNames = new Set(graph.nodes.map(n => n.name));
+  const newNodes = [];
+  const newEdges = [];
+  const edgePatterns = [
+    { regex: /([\u4e00-\u9fa5A-Za-z]{2,10})[和与跟及]?([\u4e00-\u9fa5A-Za-z]{2,10})(是|成为|结拜)(师徒|师兄弟|义兄弟|朋友)/g, type: 'colleague', label: '同伴' },
+    { regex: /([\u4e00-\u9fa5A-Za-z]{2,10})(对付|攻击|仇恨|敌视|恨|击败|杀)(了)?([\u4e00-\u9fa5A-Za-z]{2,10})/g, type: 'enemy', label: '敌对' },
+    { regex: /([\u4e00-\u9fa5A-Za-z]{2,10})喜欢([\u4e00-\u9fa5A-Za-z]{2,10})/g, type: 'ambiguous', label: '暧昧' },
+    { regex: /([\u4e00-\u9fa5A-Za-z]{2,10})的([父|母|兄|弟|姐|妹|子|女|爹|娘|爷爷|奶奶|外公|外婆]+)/g, type: 'kinship', label: '血缘' }
+  ];
+  for (const pat of edgePatterns) {
+    let m;
+    while ((m = pat.regex.exec(text)) !== null) {
+      const src = m[1], tgt = m[2] || m[4];
+      if (!existingNames.has(src)) {
+        const node = { id: 'n_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7), project_id: req.body.project_id || null, type: 'character', name: src, summary: '解析自文本', coordinates: { x: 150 + Math.random() * 400, y: 150 + Math.random() * 300 }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+        graph.nodes.push(node); newNodes.push(node); existingNames.add(src);
+      }
+      if (!existingNames.has(tgt)) {
+        const node = { id: 'n_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7), project_id: req.body.project_id || null, type: 'character', name: tgt, summary: '解析自文本', coordinates: { x: 150 + Math.random() * 400, y: 150 + Math.random() * 300 }, createdAt: new Date().toISOString(), updatedAt: new Date().toISOString() };
+        graph.nodes.push(node); newNodes.push(node); existingNames.add(tgt);
+      }
+      const edge = { id: 'e_' + Date.now() + '_' + Math.random().toString(36).slice(2, 7), project_id: req.body.project_id || null, source: src, target: tgt, type: pat.type, label: pat.label, weight: 1, createdAt: new Date().toISOString() };
+      graph.edges.push(edge); newEdges.push(edge);
+    }
+  }
+  await writeGraph(all);
+  res.json({ new_nodes: newNodes.length, new_edges: newEdges.length, nodes: graph.nodes, edges: graph.edges });
+});
+
 export default router;

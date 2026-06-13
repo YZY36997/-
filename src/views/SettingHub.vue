@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, reactive, computed, onMounted, watch } from 'vue'
 import { useRoute } from 'vue-router'
-import { projectApi, characterApi, factionApi, artifactApi, foreshadowApi, chapterApi, rulesApi, ElMessage, ElMessageBox } from '@/api'
+import { projectApi, characterApi, factionApi, artifactApi, foreshadowApi, chapterApi, rulesApi, worldTemplateApi, ElMessage, ElMessageBox } from '@/api'
 import { ElMessage as Msg, ElMessageBox as MB } from 'element-plus'
 import {
   User, Swords, Castle, BookOpen, BookmarkCheck, Sparkles,
@@ -38,7 +38,7 @@ async function saveOutlineTree() {
 function refreshWorldTemplate(genre = '玄幻') {
   const map: Record<string, string> = { '玄幻': 'xuanhuan', '都市': 'urban', '科幻': 'scifi', '悬疑': 'suspense', '言情': 'romance' }
   const cat = map[genre] || 'xuanhuan'
-  projectApi.worldTemplate(cat).then((r: any) => {
+  worldTemplateApi.category(cat).then((r: any) => {
     worldTemplate.value = r
     Object.keys(worldValues).forEach(k => delete worldValues[k])
   })
@@ -48,7 +48,7 @@ async function applyWorldTemplate() {
   const map: Record<string, string> = { '玄幻': 'xuanhuan', '都市': 'urban', '科幻': 'scifi', '悬疑': 'suspense', '言情': 'romance' }
   const cat = map[projectDetail.value?.genre || '玄幻'] || 'xuanhuan'
   try {
-    await projectApi.applyTemplate(projectId.value, cat, { ...worldValues })
+    await worldTemplateApi.apply(projectId.value, cat, { ...worldValues })
     Msg.success('设定已保存，后续 AI 生成将作为上下文注入')
   } catch (_) { Msg.error('保存失败') }
 }
@@ -176,11 +176,9 @@ const customRules = ref<any[]>([])
 const enabledRules = ref(true)
 const editingRule = ref<any>(null)
 async function loadRules() {
-  customRules.value = await rulesApi.list(projectId.value)
-  try {
-    const t = await rulesApi.toggle(true)
-    enabledRules.value = t.enabled !== false
-  } catch (_) {}
+  const r: any = await rulesApi.list(projectId.value)
+  customRules.value = r?.custom || []
+  enabledRules.value = r?.enabled !== false
 }
 function newRule() { editingRule.value = { title: '自定义规则', note: '', patterns: [{ regex: '', level: 'warn', note: '' }] } }
 async function saveRule() {

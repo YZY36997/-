@@ -1,41 +1,39 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
-import { rulesEngineApi, projectApi } from '@/api'
-import { ShieldCheck, Plus, Trash2, ToggleLeft, ToggleRight } from 'lucide-vue-next'
-import type { FormInstance, FormRules } from 'element-plus'
+import { rulesApi, projectApi } from '@/api'
+import { ShieldCheck, Plus, Trash2 } from 'lucide-vue-next'
 
 const rules = ref<any[]>([])
-const projects = ref<any[]>([])
-const activeProject = ref<string>('')
+const enabledGlobal = ref(true)
 const dialogVisible = ref(false)
-const formRef = ref<FormInstance>()
-const form = ref<any>({ name: '', category: 'custom', content: '', severity: 'warn' })
-const projectBind = ref<any>({ projectId: '', ruleIds: [] })
-const bindVisible = ref(false)
-const builtin = ref<string[]>(['全局禁词：色情/暴力/种族歧视/未成年人不良导向', '题材约束：玄幻不可出现现代枪械', '都市避免使用政治敏感话题', '言情避免强取豪夺/PUA 暗示', '科幻避免出现违反基本物理定律'])
+const form = ref<any>({ title: '新规则', type: 'custom', patterns: [{ regex: '', level: 'warn', note: '' }] })
+
+async function load() {
+  const data: any = await rulesApi.list()
+  rules.value = data?.custom || []
+  enabledGlobal.value = data?.enabled !== false
+}
 
 onMounted(async () => {
-  try {
-    projects.value = await projectApi.list() || []
-    const data = await rulesEngineApi.list()
-    rules.value = data?.rules || []
-  } catch (e) { /* ignore */ }
+  try { load() } catch (e) { /* ignore */ }
 })
 
 async function createRule() {
-  if (!form.value.name || !form.value.content) return
-  const data = await rulesEngineApi.create(form.value)
-  rules.value.push(data)
+  if (!form.value.title) return
+  const saved = await rulesApi.create(form.value)
+  rules.value.push(saved)
   dialogVisible.value = false
-  form.value = { name: '', category: 'custom', content: '', severity: 'warn' }
+  form.value = { title: '新规则', type: 'custom', patterns: [{ regex: '', level: 'warn', note: '' }] }
 }
+
 async function removeRule(id: string) {
-  await rulesEngineApi.remove(id)
+  await rulesApi.remove(id)
   rules.value = rules.value.filter(r => r.id !== id)
 }
-async function toggleRule(r: any) {
-  await rulesEngineApi.toggle(r.id)
-  r.enabled = !r.enabled
+
+async function toggleGlobal(val: boolean) {
+  await rulesApi.toggle(val)
+  enabledGlobal.value = val
 }
 </script>
 
@@ -48,47 +46,47 @@ async function toggleRule(r: any) {
 
     <el-card shadow="never">
       <template #header>
-      <div class="card-header">
-        <span>内置规则（系统内置，不可删除）</span>
-      </div>
+        <div class="card-header">
+          <span>内置规则（系统内置，不可删除）</span>
+          <el-switch v-model="enabledGlobal" active-text="启用规则引擎" inactive-text="禁用" @change="toggleGlobal" />
+        </div>
       </template>
-      <el-timeline>
-        <el-timeline-item
-          v-for="(r, i) in builtin" :key="i"
-          :color="i === 0 ? '#f56c6c' : '#67c23a'"
-          placement="top"
-        >
-          {{ r }}
-        </el-timeline-item>
-      </el-timeline>
+      <el-descriptions :column="1" border size="small">
+        <el-descriptions-item label="🚫 全局禁词（高风险）">色情 · 淫秽 · 血腥暴力 · 屠杀 · 虐杀 · 歧视 · 政治敏感 · 未成年人不良导向</el-descriptions-item>
+        <el-descriptions-item label="玄幻仙侠">避免出现"手机 / 互联网 / 微信 / 支付宝"等现代词；修仙境界保持一致</el-descriptions-item>
+        <el-descriptions-item label="都市">避免强行引入修仙体系；保持现代生活逻辑；避免政治敏感话题</el-descriptions-item>
+        <el-descriptions-item label="科幻">科学设定需自洽；避免奇幻修仙术语混入</el-descriptions-item>
+        <el-descriptions-item label="恐怖悬疑">保持氛围一致性；避免突兀温馨词</el-descriptions-item>
+        <el-descriptions-item label="言情">细腻情绪描写；避免过度暴力/强取豪夺</el-descriptions-item>
+      </el-descriptions>
     </el-card>
 
     <el-card class="mt-20" shadow="never">
       <template #header>
         <div class="card-header">
-          <span>自定义规则</span>
+          <span>自定义规则 · {{ rules.length }}</span>
           <el-button type="primary" @click="dialogVisible = true"><Plus icon="Plus" /></el-button>
         </div>
       </template>
       <el-table :data="rules" stripe empty-text="尚未添加规则">
-        <el-table-column prop="name" label="名称" width="180" />
-        <el-table-column prop="category" label="分类" width="120">
+        <el-table-column prop="title" label="名称" width="180" />
+        <el-table-column prop="type" label="类型" width="120">
+          <template #default="{ row }"><el-tag size="small">{{ row.type }}</el-tag></template>
+        </el-table-column>
+        <el-table-column label="命中规则">
           <template #default="{ row }">
-            <el-tag size="small">{{ row.category }}</el-tag>
+            <el-tag v-for="(p, i) in (row.patterns || [])" :key="i" :type="p.level === 'block' ? 'danger' : 'warning'" class="pattern-chip">
+              {{ p.regex || '（未填写）' }}
+              <span v-if="p.note"> · {{ p.note }}</span>
+            </el-tag>
           </template>
         </el-table-column>
-        <el-table-column prop="content" label="规则内容" />
-        <el-table-column prop="severity" label="级别" width="100">
+        <el-table-column label="启用" width="100" align="center">
           <template #default="{ row }">
-            <el-tag size="small" :type="row.severity === 'block' ? 'danger' : 'warning'">{{ row.severity }}</el-tag>
+            <el-switch :model-value="row.enabled !== false" @change="rulesApi.update(row.id, { ...row, enabled: !row.enabled }).then(() => load())" />
           </template>
         </el-table-column>
-        <el-table-column label="启用" width="100">
-          <template #default="{ row }">
-            <el-switch :model-value="row.enabled !== false" @change="toggleRule(row)" />
-          </template>
-        </el-table-column>
-        <el-table-column label="操作" width="120">
+        <el-table-column label="操作" width="120" align="center">
           <template #default="{ row }">
             <el-button size="small" type="danger" @click="removeRule(row.id)"><Trash2 /></el-button>
           </template>
@@ -96,25 +94,29 @@ async function toggleRule(r: any) {
       </el-table>
     </el-card>
 
-    <!-- 新建规则对话框 -->
-    <el-dialog v-model="dialogVisible" title="新建规则" width="520px">
-      <el-form ref="formRef" :model="form" :rules="{}" label-width="80px">
-        <el-form-item label="规则名"><el-input v-model="form.name" placeholder="例如 禁词" /></el-form-item>
-        <el-form-item label="分类">
-          <el-select v-model="form.category">
+    <el-dialog v-model="dialogVisible" title="新建规则" width="640px">
+      <el-form label-width="100px">
+        <el-form-item label="规则名"><el-input v-model="form.title" /></el-form-item>
+        <el-form-item label="类型">
+          <el-select v-model="form.type" style="width:100%">
             <el-option label="禁词" value="forbidden" />
+            <el-option label="题材" value="genre" />
             <el-option label="文风" value="style" />
+            <el-option label="剧情" value="plot" />
             <el-option label="自定义" value="custom" />
           </el-select>
         </el-form-item>
-        <el-form-item label="内容">
-          <el-input v-model="form.content" type="textarea" :rows="4" placeholder="使用正则或关键词，多个用英文逗号分隔" />
+        <el-form-item label="命中词">
+          <el-input v-model="form.patterns[0].regex" placeholder="例：(手机|电脑|互联网)" />
         </el-form-item>
         <el-form-item label="违规级别">
-          <el-radio-group v-model="form.severity">
-            <el-radio-button label="warn" />
-            <el-radio-button label="block" />
+          <el-radio-group v-model="form.patterns[0].level">
+            <el-radio-button value="warn" />
+            <el-radio-button value="block" />
           </el-radio-group>
+        </el-form-item>
+        <el-form-item label="备注">
+          <el-input v-model="form.patterns[0].note" placeholder="如：建议替换为..." />
         </el-form-item>
       </el-form>
       <template #footer>
@@ -131,4 +133,5 @@ async function toggleRule(r: any) {
 .page-header .subtitle { color: #888; margin: 0 0 24px; }
 .mt-20 { margin-top: 24px; }
 .card-header { font-weight: 600; color: #1a1a2e; display: flex; justify-content: space-between; align-items: center; }
+.pattern-chip { margin-right: 6px; margin-bottom: 6px; }
 </style>

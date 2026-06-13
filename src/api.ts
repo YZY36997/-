@@ -127,7 +127,8 @@ export const graphApi = {
   removeEdge: (id: string) => api.delete(`/api/knowledge-graph/edges/${id}`).then(r => r.data),
   adjacency: (node_id: string) => api.get(`/api/knowledge-graph/adjacency?node_id=${node_id}`).then(r => r.data),
   history: () => api.get('/api/knowledge-graph/history').then(r => r.data),
-  autoImportCharacters: (project_id: string) => api.post('/api/knowledge-graph/auto-import-characters', { project_id }).then(r => r.data)
+  autoImportCharacters: (project_id: string) => api.post('/api/knowledge-graph/auto-import-characters', { project_id }).then(r => r.data),
+  autoParse: (project_id: string, text: string) => api.post('/api/knowledge-graph/auto-parse', { project_id, text }).then(r => r.data)
 }
 
 // ---------- Analysis (追读力) ----------
@@ -147,7 +148,10 @@ export const worldTemplateApi = {
 // ---------- Rules Engine (规则引擎) ----------
 export const rulesApi = {
   meta: () => api.get('/api/rules/meta').then(r => r.data),
-  list: () => api.get('/api/rules').then(r => r.data),
+  list: (project_id?: string) => {
+    const q = project_id ? `?project_id=${project_id}` : ''
+    return api.get('/api/rules' + q).then(r => r.data)
+  },
   create: (data: any) => api.post('/api/rules/custom', data).then(r => r.data),
   update: (id: string, data: any) => api.put(`/api/rules/custom/${id}`, data).then(r => r.data),
   remove: (id: string) => api.delete(`/api/rules/custom/${id}`).then(r => r.data),

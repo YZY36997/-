@@ -1,48 +1,52 @@
 <script setup lang="ts">
 import { ref, onMounted, computed } from 'vue'
 import { useRoute } from 'vue-router'
-import { foreshadowApi, projectApi, characterApi } from '@/api'
-import { Scroll, Plus, Trash2, CheckCircle2, AlertTriangle } from 'lucide-vue-next'
+import { foreshadowApi, projectApi } from '@/api'
+import { Scroll, Plus, Trash2, CheckCircle2 } from 'lucide-vue-next'
 
 const route = useRoute()
 const projectId = ref<string | null>(null)
-const foreshadows = ref<any[]>([])
 const projects = ref<any[]>([])
-const characters = ref<any[]>([])
+const foreshadows = ref<any[]>([])
 const dialogVisible = ref(false)
-const form = ref<any>({ title: '', content: '', chapter_buried: '', priority: 'high', related_characters: [], status: 'pending' })
+const form = ref<any>({ title: '', content: '', planted_chapter: '', priority: 3, status: 'planted' })
+
+async function reload() {
+  if (!projectId.value) return
+  const data = await foreshadowApi.list(projectId.value).catch(() => [])
+  foreshadows.value = Array.isArray(data) ? data : (data?.foreshadows || [])
+}
 
 onMounted(async () => {
   projectId.value = (route.params.projectId as string) || null
   try {
     projects.value = await projectApi.list() || []
     if (!projectId.value && projects.value[0]) projectId.value = projects.value[0].id
-    if (projectId.value) {
-      const data = await foreshadowApi.list(projectId.value)
-      foreshadows.value = data?.foreshadows || []
-      const cd = await characterApi.list(projectId.value)
-      characters.value = cd?.characters || []
-    }
+    reload()
   } catch (e) { /* ignore */ }
 })
 
-const pendingCount = computed(() => foreshadows.value.filter(f => f.status !== 'retrieved').length)
-const retrievedCount = computed(() => foreshadows.value.filter(f => f.status === 'retrieved').length)
+const pendingCount = computed(() => foreshadows.value.filter((f: any) => f.status !== 'recovered').length)
+const recoveredCount = computed(() => foreshadows.value.filter((f: any) => f.status === 'recovered').length)
 
 async function save() {
   if (!form.value.title) return
   const data = await foreshadowApi.create({ ...form.value, project_id: projectId.value })
   foreshadows.value.push(data)
   dialogVisible.value = false
-  form.value = { title: '', content: '', chapter_buried: '', priority: 'high', related_characters: [], status: 'pending' }
+  form.value = { title: '', content: '', planted_chapter: '', priority: 3, status: 'planted' }
 }
+
 async function remove(id: string) {
   await foreshadowApi.remove(id)
-  foreshadows.value = foreshadows.value.filter(f => f.id !== id)
+  foreshadows.value = foreshadows.value.filter((f: any) => f.id !== id)
 }
+
 async function markRetrieved(f: any) {
-  f.status = 'retrieved'
-  await foreshadowApi.update(f.id, { status: 'retrieved' })
+  try {
+    await foreshadowApi.recover(f.id).catch(() => {})
+  } catch (_) { /* fallback */ }
+  f.status = 'recovered'
 }
 </script>
 
@@ -50,29 +54,13 @@ async function markRetrieved(f: any) {
   <div class="page">
     <div class="page-header">
       <h1><Scroll /> 伏笔库</h1>
-      <p class="subtitle">埋设 / 回收 · 优先级 · 关联角色 · 情节债务</p>
+      <p class="subtitle">埋设 / 回收 · 优先级 · 关联章节 · 情节债务</p>
     </div>
 
     <el-row :gutter="20">
-      <el-col :span="8">
-        <div class="metric-card warn">
-          <div class="metric-label">未回收</div>
-          <div class="metric-value">{{ pendingCount }}</div>
-          <small>情节债务</small>
-        </div>
-      </el-col>
-      <el-col :span="8">
-        <div class="metric-card ok">
-          <div class="metric-label">已回收</div>
-          <div class="metric-value">{{ retrievedCount }}</div>
-        </div>
-      </el-col>
-      <el-col :span="8">
-        <div class="metric-card info">
-          <div class="metric-label">总计</div>
-          <div class="metric-value">{{ foreshadows.length }}</div>
-        </div>
-      </el-col>
+      <el-col :span="8"><div class="metric-card warn"><div class="metric-label">未回收</div><div class="metric-value">{{ pendingCount }}</div><small>情节债务</small></div></el-col>
+      <el-col :span="8"><div class="metric-card ok"><div class="metric-label">已回收</div><div class="metric-value">{{ recoveredCount }}</div></div></el-col>
+      <el-col :span="8"><div class="metric-card info"><div class="metric-label">总计</div><div class="metric-value">{{ foreshadows.length }}</div></div></el-col>
     </el-row>
 
     <el-card class="mt-20" shadow="never">
@@ -85,26 +73,20 @@ async function markRetrieved(f: any) {
       <el-table :data="foreshadows" stripe empty-text="还没有埋下任何伏笔">
         <el-table-column prop="title" label="标题" width="180" />
         <el-table-column prop="content" label="内容" show-overflow-tooltip />
-        <el-table-column prop="chapter_buried" label="埋设章节" width="130" />
+        <el-table-column prop="planted_chapter" label="埋设章节" width="130" />
         <el-table-column label="优先级" width="100" align="center">
           <template #default="{ row }">
-            <el-tag size="small" :type="row.priority === 'high' ? 'danger' : row.priority === 'medium' ? 'warning' : 'info'">
-              {{ row.priority }}
-            </el-tag>
+            <el-tag size="small" :type="(row.priority || 3) >= 4 ? 'danger' : (row.priority || 3) >= 3 ? 'warning' : 'info'">{{ row.priority || 3 }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="状态" width="120" align="center">
           <template #default="{ row }">
-            <el-tag size="small" :type="row.status === 'retrieved' ? 'success' : 'warning'">
-              {{ row.status === 'retrieved' ? '已回收' : '未回收' }}
-            </el-tag>
+            <el-tag size="small" :type="row.status === 'recovered' ? 'success' : 'warning'">{{ row.status === 'recovered' ? '已回收' : '未回收' }}</el-tag>
           </template>
         </el-table-column>
         <el-table-column label="操作" width="200" align="center">
           <template #default="{ row }">
-            <el-button v-if="row.status !== 'retrieved'" size="small" type="success" @click="markRetrieved(row)">
-              <CheckCircle2 /> 标记回收
-            </el-button>
+            <el-button v-if="row.status !== 'recovered'" size="small" type="success" @click="markRetrieved(row)"><CheckCircle2 /> 标记回收</el-button>
             <el-button size="small" type="danger" @click="remove(row.id)"><Trash2 /></el-button>
           </template>
         </el-table-column>
@@ -115,21 +97,10 @@ async function markRetrieved(f: any) {
       <el-form label-width="100px">
         <el-form-item label="标题"><el-input v-model="form.title" /></el-form-item>
         <el-form-item label="内容">
-          <el-input v-model="form.content" type="textarea" :rows="3" placeholder="简要描述伏笔内容与预计回收时机" />
+          <el-input v-model="form.content" type="textarea" :rows="3" placeholder="简要描述伏笔与预计回收时机" />
         </el-form-item>
-        <el-form-item label="埋设章节"><el-input v-model="form.chapter_buried" placeholder="例如 第 7 章" /></el-form-item>
-        <el-form-item label="优先级">
-          <el-select v-model="form.priority" style="width:100%">
-            <el-option label="高" value="high" />
-            <el-option label="中" value="medium" />
-            <el-option label="低" value="low" />
-          </el-select>
-        </el-form-item>
-        <el-form-item label="关联角色">
-          <el-select v-model="form.related_characters" multiple filterable style="width:100%" placeholder="选择角色">
-            <el-option v-for="c in characters" :key="c.id" :label="c.name" :value="c.name" />
-          </el-select>
-        </el-form-item>
+        <el-form-item label="埋设章节"><el-input v-model="form.planted_chapter" placeholder="例如 第 7 章" /></el-form-item>
+        <el-form-item label="优先级"><el-input-number v-model="form.priority" :min="1" :max="5" /></el-form-item>
       </el-form>
       <template #footer>
         <el-button @click="dialogVisible = false">取消</el-button>

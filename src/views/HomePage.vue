@@ -4,7 +4,7 @@ import { useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
 import { useMaterialStore } from '@/stores/material'
 import { useGeneratorStore } from '@/stores/generator'
-import { FolderOpen, Sparkles, BookOpen, FileText } from 'lucide-vue-next'
+import { FolderOpen, Sparkles, BookOpen, FileText, Network, LayoutGrid, BarChart3, Wand2, ShieldCheck, Palette, Scroll, Settings2 } from 'lucide-vue-next'
 
 const router = useRouter()
 const projectStore = useProjectStore()
@@ -141,6 +141,69 @@ function openProject(p: any) {
           <div class="quick-card" @click="router.push({ name: 'templates' })">
             <el-icon class="quick-icon"><FileText /></el-icon>
             <span>爆文模板</span>
+          </div>
+        </el-col>
+      </el-row>
+    </div>
+
+    <!-- 长篇创作核心工具 -->
+    <div class="quick-section">
+      <h2 class="section-title">长篇创作核心工具</h2>
+      <el-row :gutter="16">
+        <el-col :span="6">
+          <div class="quick-card feature" @click="router.push({ name: 'setting-hub' })">
+            <el-icon class="quick-icon"><LayoutGrid /></el-icon>
+            <span>设定中枢</span>
+            <small>世界观 / 大纲 / 角色 / 势力 / 道具 / 伏笔</small>
+          </div>
+        </el-col>
+        <el-col :span="6">
+          <div class="quick-card feature" @click="router.push({ name: 'relation-graph' })">
+            <el-icon class="quick-icon"><Network /></el-icon>
+            <span>人物引力星图</span>
+            <small>节点拖拽 · 连线关系 · 图谱反哺生成</small>
+          </div>
+        </el-col>
+        <el-col :span="6">
+          <div class="quick-card feature" @click="router.push({ name: 'analysis-dashboard' })">
+            <el-icon class="quick-icon"><BarChart3 /></el-icon>
+            <span>追读力分析</span>
+            <small>Hook 强度 · 爽点密度 · 伏笔回收 · 情节债务</small>
+          </div>
+        </el-col>
+        <el-col :span="6">
+          <div class="quick-card feature" @click="router.push({ name: 'rules-engine' })">
+            <el-icon class="quick-icon"><ShieldCheck /></el-icon>
+            <span>规则引擎</span>
+            <small>全局禁词 · 题材规则 · 自定义约束 · 生成后校验</small>
+          </div>
+        </el-col>
+        <el-col :span="6">
+          <div class="quick-card feature" @click="router.push({ name: 'prompts-workshop' })">
+            <el-icon class="quick-icon"><Wand2 /></el-icon>
+            <span>提示词仓库</span>
+            <small>去 AI 味 · 文风控制 · 对话优化 · 场景描写模板</small>
+          </div>
+        </el-col>
+        <el-col :span="6">
+          <div class="quick-card feature" @click="router.push({ name: 'models-config' })">
+            <el-icon class="quick-icon"><Settings2 /></el-icon>
+            <span>多模型配置</span>
+            <small>任务绑定 · 失败切换 · 免费额度</small>
+          </div>
+        </el-col>
+        <el-col :span="6">
+          <div class="quick-card feature" @click="router.push({ name: 'world-template' })">
+            <el-icon class="quick-icon"><Palette /></el-icon>
+            <span>14项世界观问卷</span>
+            <small>玄幻 / 都市 / 科幻 / 悬疑 / 言情 一键搭建</small>
+          </div>
+        </el-col>
+        <el-col :span="6">
+          <div class="quick-card feature" @click="router.push({ name: 'foreshadow-panel' })">
+            <el-icon class="quick-icon"><Scroll /></el-icon>
+            <span>伏笔库</span>
+            <small>埋设 / 回收 · 优先级 · 关联角色 · 情节债务</small>
           </div>
         </el-col>
       </el-row>
@@ -328,5 +391,15 @@ function openProject(p: any) {
 .quick-icon {
   font-size: 36px;
   color: #667eea;
+}
+
+.quick-card.feature {
+  min-height: 120px;
+}
+.quick-card.feature small {
+  color: #aaa;
+  font-size: 12px;
+  line-height: 1.5;
+  margin-top: 4px;
 }
 </style>

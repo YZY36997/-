@@ -42,6 +42,36 @@ const router = createRouter({
       path: '/relation-graph/:projectId?',
       name: 'relation-graph',
       component: () => import('../views/RelationGraph.vue')
+    },
+    {
+      path: '/analysis/:projectId?',
+      name: 'analysis-dashboard',
+      component: () => import('../views/AnalysisDashboard.vue')
+    },
+    {
+      path: '/rules-engine',
+      name: 'rules-engine',
+      component: () => import('../views/RulesEnginePage.vue')
+    },
+    {
+      path: '/prompts-workshop',
+      name: 'prompts-workshop',
+      component: () => import('../views/PromptsWorkshop.vue')
+    },
+    {
+      path: '/models-config',
+      name: 'models-config',
+      component: () => import('../views/ModelsConfigPage.vue')
+    },
+    {
+      path: '/world-template',
+      name: 'world-template',
+      component: () => import('../views/WorldTemplatePage.vue')
+    },
+    {
+      path: '/foreshadow/:projectId?',
+      name: 'foreshadow-panel',
+      component: () => import('../views/ForeshadowPanel.vue')
     }
   ]
 })

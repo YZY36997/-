@@ -29,9 +29,6 @@ export const projectApi = {
   recycleList: () => api.get('/api/projects/recycle').then(r => r.data),
   restore: (ids: string[]) => api.post('/api/projects/restore', { project_ids: ids }).then(r => r.data),
   importText: (project_id: string, text: string, name: string) => api.post('/api/projects/import-text', { project_id, text, name }).then(r => r.data),
-  worldTemplateList: () => api.get('/api/world-template/categories').then(r => r.data),
-  worldTemplate: (cat: string) => api.get(`/api/world-template/category/${cat}`).then(r => r.data),
-  applyTemplate: (project_id: string, cat: string, values: any) => api.post('/api/world-template/apply', { project_id, category: cat, values }).then(r => r.data),
   outlineTree: (project_id: string) => api.get(`/api/projects/${project_id}/outline-tree`).then(r => r.data),
   saveOutlineTree: (project_id: string, tree: any) => api.put(`/api/projects/${project_id}/outline-tree`, { tree }).then(r => r.data)
 }
@@ -138,6 +135,13 @@ export const analysisApi = {
   chapter: (data: any) => api.post('/api/analysis/chapter', data).then(r => r.data),
   dashboard: (project_id: string) => api.get(`/api/analysis/dashboard/${project_id}`).then(r => r.data),
   suggestions: (project_id: string) => api.post(`/api/analysis/suggestions/${project_id}`, {}).then(r => r.data)
+}
+
+// ---------- World Template (世界观问卷) ----------
+export const worldTemplateApi = {
+  list: () => api.get('/api/world-template/categories').then(r => r.data),
+  category: (cat: string) => api.get(`/api/world-template/category/${cat}`).then(r => r.data),
+  apply: (project_id: string, category: string, values: any) => api.post('/api/world-template/apply', { project_id, category, values }).then(r => r.data)
 }
 
 // ---------- Rules Engine (规则引擎) ----------

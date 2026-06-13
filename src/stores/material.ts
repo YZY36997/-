@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import axios from 'axios'
+import api from '../api'
 
 export interface Material {
   id: string
@@ -40,8 +40,8 @@ export const useMaterialStore = defineStore('material', () => {
     if (currentFilter.value.keyword) {
       const keyword = currentFilter.value.keyword.toLowerCase()
       result = result.filter(m =>
-        m.name.toLowerCase().includes(keyword) ||
-        m.content.toLowerCase().includes(keyword)
+        (m.name || '').toLowerCase().includes(keyword) ||
+        (m.content || '').toLowerCase().includes(keyword)
       )
     }
 
@@ -51,9 +51,7 @@ export const useMaterialStore = defineStore('material', () => {
   const materialsByCategory = computed(() => {
     const grouped: Record<string, Material[]> = {}
     filteredMaterials.value.forEach(m => {
-      if (!grouped[m.category]) {
-        grouped[m.category] = []
-      }
+      if (!grouped[m.category]) grouped[m.category] = []
       grouped[m.category].push(m)
     })
     return grouped
@@ -62,11 +60,9 @@ export const useMaterialStore = defineStore('material', () => {
   async function fetchMaterials(projectId?: string) {
     loading.value = true
     try {
-      let url = '/api/materials'
-      if (projectId) {
-        url += `/project/${projectId}`
-      }
-      const response = await axios.get(url)
+      const params: Record<string, any> = {}
+      if (projectId) params.project_id = projectId
+      const response = await api.get('/api/materials', { params })
       materials.value = response.data
     } catch (error) {
       console.error('获取素材列表失败:', error)
@@ -77,7 +73,7 @@ export const useMaterialStore = defineStore('material', () => {
 
   async function fetchGlobalMaterials() {
     try {
-      const response = await axios.get('/api/materials/global')
+      const response = await api.get('/api/materials', { params: { project_id: 'global' } })
       globalMaterials.value = response.data
     } catch (error) {
       console.error('获取全局素材失败:', error)
@@ -86,7 +82,7 @@ export const useMaterialStore = defineStore('material', () => {
 
   async function createMaterial(data: Partial<Material>) {
     try {
-      const response = await axios.post('/api/materials', data)
+      const response = await api.post('/api/materials', data)
       materials.value.push(response.data)
       return response.data
     } catch (error) {
@@ -97,11 +93,9 @@ export const useMaterialStore = defineStore('material', () => {
 
   async function updateMaterial(id: string, data: Partial<Material>) {
     try {
-      const response = await axios.put(`/api/materials/${id}`, data)
+      const response = await api.put(`/api/materials/${id}`, data)
       const index = materials.value.findIndex(m => m.id === id)
-      if (index !== -1) {
-        materials.value[index] = response.data
-      }
+      if (index !== -1) materials.value[index] = response.data
       return response.data
     } catch (error) {
       console.error('更新素材失败:', error)
@@ -111,8 +105,9 @@ export const useMaterialStore = defineStore('material', () => {
 
   async function deleteMaterial(id: string) {
     try {
-      await axios.delete(`/api/materials/${id}`)
+      await api.delete(`/api/materials/${id}`)
       materials.value = materials.value.filter(m => m.id !== id)
+      globalMaterials.value = globalMaterials.value.filter(m => m.id !== id)
       return true
     } catch (error) {
       console.error('删除素材失败:', error)
@@ -122,7 +117,7 @@ export const useMaterialStore = defineStore('material', () => {
 
   async function batchCreateMaterials(materialsList: Partial<Material>[]) {
     try {
-      const response = await axios.post('/api/materials/batch', { materials: materialsList })
+      const response = await api.post('/api/materials/batch', { materials: materialsList })
       materials.value.push(...response.data)
       return response.data
     } catch (error) {

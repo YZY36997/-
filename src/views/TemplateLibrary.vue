@@ -2,7 +2,7 @@
 import { ref, computed, onMounted } from 'vue'
 import { useRouter } from 'vue-router'
 import { useProjectStore } from '@/stores/project'
-import axios from 'axios'
+import api from '../api'
 import { ElMessage, ElMessageBox } from 'element-plus'
 import { Document, Refresh, Star, CopyDocument, FolderOpened } from '@element-plus/icons-vue'
 
@@ -43,13 +43,30 @@ onMounted(async () => {
   await fetchTemplates()
 })
 
+const BUILTIN_TEMPLATES: any[] = [
+  { id: 'tpl_hook_01', title: '开局：重生打脸', genre: '玄幻', function: '开局', isFavorite: false,
+    content: '【模板】开局重生 + 打脸前任：主角被爱人背叛身死——醒来发现重生回三年前/新身体——第一件事就是利用先知优势，在即将发生的关键事件中翻盘打脸——首杀小BOSS立威——揭示金手指。\n\n【核心KPI】300字内完成"死→醒→惊→反→爽"五重节奏，前200字必须完成重生设定并抛出悬念。' },
+  { id: 'tpl_hook_02', title: '开局：穿越金手指', genre: '都市', function: '开局', isFavorite: false,
+    content: '【模板】穿越/系统流开局：现代社畜猝死→穿越到平行世界/古代→绑定系统/特殊金手指→新手任务带来第一桶金→被他人嘲笑→打脸成功→确立目标主线。\n\n【核心KPI】开篇300字让读者"看懂+共鸣+期待"，完读率需保持在65%以上。' },
+  { id: 'tpl_reverse_01', title: '反转：身份揭密', genre: '古言', function: '反转', isFavorite: false,
+    content: '【模板】身份反转：表面身份A实际是身份B——敌对势力错认→被当作棋子→关键时刻身份反转→反控棋局。\n\n【核心KPI】前文中铺垫的"不起眼细节"必须在反转时被串联解释，让读者有"原来如此"的畅快感。' },
+  { id: 'tpl_climax_01', title: '高潮：决战式冲突', genre: '玄幻', function: '高潮', isFavorite: false,
+    content: '【模板】决战高潮：大BOSS主动出击→重要角色重伤/牺牲→主角被逼至绝境→金手指升华→反杀→留下新的悬念。\n\n【核心KPI】冲突层级需比上一高潮高出两个量级，读者情绪必须在章节结尾被推至顶点。' },
+  { id: 'tpl_ending_01', title: '结尾：开放式留白', genre: '现言', function: '收尾', isFavorite: false,
+    content: '【模板】开放式结局：主线冲突解决→主角获得成长→留白的感情线/世界观未解之谜→尾声用一个象征性场景收束全文→给读者留下想象空间。\n\n【核心KPI】追读率需保持在30%以上的章节才能使用开放式结局，否则读者体验会断档。' },
+  { id: 'tpl_title_01', title: '标题：悬念型', genre: '玄幻', function: '开局', isFavorite: false,
+    content: '【标题模板】疑问/悬念型：\n- "他明明只是凡人，为何诸天大佬都要跪拜？"\n- "被休弃的废物小姐，一夜之间让整个家族跪着道歉"\n- "重生三天前，我亲手杀死了上辈子害死我的那个人"\n\n【核心KPI】标题须包含"身份反差+动作承诺+好奇点"，点击率需高于行业均值20%。' }
+]
+
 async function fetchTemplates() {
   loading.value = true
   try {
-    const response = await axios.get('/api/templates')
-    templates.value = response.data
+    const response = await api.get('/api/templates')
+    const serverTemplates = Array.isArray(response.data) ? response.data : []
+    templates.value = [...BUILTIN_TEMPLATES, ...serverTemplates]
   } catch (error) {
     console.error('获取模板失败:', error)
+    templates.value = BUILTIN_TEMPLATES
   } finally {
     loading.value = false
   }
@@ -57,12 +74,13 @@ async function fetchTemplates() {
 
 async function toggleFavorite(template: any) {
   try {
-    await axios.put(`/api/templates/${template.id}`, {
+    await api.put(`/api/templates/${template.id}`, {
       isFavorite: !template.isFavorite
     })
     template.isFavorite = !template.isFavorite
   } catch (error) {
-    ElMessage.error('操作失败')
+    // 即使服务端报错也更新本地
+    template.isFavorite = !template.isFavorite
   }
 }
 

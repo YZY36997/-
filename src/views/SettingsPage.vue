@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, onMounted } from 'vue'
 import { ElMessage } from 'element-plus'
-import axios from 'axios'
+import api from '../api'
 
 const settings = ref({
   aiProvider: 'openai',
@@ -25,7 +25,7 @@ onMounted(async () => {
 async function fetchSettings() {
   loading.value = true
   try {
-    const response = await axios.get('/api/settings')
+    const response = await api.get('/api/settings')
     settings.value = { ...settings.value, ...response.data }
   } catch (error) {
     console.error('获取设置失败:', error)
@@ -36,7 +36,7 @@ async function fetchSettings() {
 
 async function saveSettings() {
   try {
-    await axios.put('/api/settings', settings.value)
+    await api.put('/api/settings', settings.value)
     ElMessage.success('设置已保存')
   } catch (error) {
     ElMessage.error('保存失败')
@@ -53,15 +53,12 @@ async function testConnection() {
   testResult.value = ''
 
   try {
-    const response = await axios.post(
-      '/api/generators/generate',
-      {
-        generator_id: 'gen_tool_inspiration',
-        params: { dilemma: '测试连接', genre: '玄幻', inspirationDirection: '随便' },
-        project_id: null,
-        with_project_material: false
-      }
-    )
+    await api.post('/api/generators/generate', {
+      generator_id: 'gen_tool_names',
+      params: { type: '人名', count: '3', style: '古风', genre: '玄幻' },
+      project_id: null,
+      with_project_material: false
+    })
     testResult.value = '连接成功！'
     ElMessage.success('API连接测试成功')
   } catch (error: any) {

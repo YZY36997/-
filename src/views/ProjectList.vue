@@ -2,6 +2,7 @@
 import { ref, onMounted } from 'vue'
 import { useProjectStore } from '@/stores/project'
 import { ElMessage, ElMessageBox } from 'element-plus'
+import { Plus, Document } from '@element-plus/icons-vue'
 
 const projectStore = useProjectStore()
 

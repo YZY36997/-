@@ -1,6 +1,6 @@
 import { defineStore } from 'pinia'
 import { ref, computed } from 'vue'
-import axios from 'axios'
+import api from '../api'
 
 export interface Project {
   id: string
@@ -11,12 +11,19 @@ export interface Project {
   outline: {
     title: string
     summary: string
+    content?: string
     chapters: any[]
   }
   settings: {
     genre: string
     style: string
   }
+  generations?: Array<{
+    generator: string
+    prompt: string
+    result: string
+    createdAt: string
+  }>
 }
 
 export const useProjectStore = defineStore('project', () => {
@@ -33,7 +40,7 @@ export const useProjectStore = defineStore('project', () => {
   async function fetchProjects() {
     loading.value = true
     try {
-      const response = await axios.get('/api/projects')
+      const response = await api.get('/api/projects')
       projects.value = response.data
     } catch (error) {
       console.error('获取项目列表失败:', error)
@@ -44,7 +51,7 @@ export const useProjectStore = defineStore('project', () => {
 
   async function fetchProject(id: string) {
     try {
-      const response = await axios.get(`/api/projects/${id}`)
+      const response = await api.get(`/api/projects/${id}`)
       currentProject.value = response.data
       return response.data
     } catch (error) {
@@ -55,7 +62,7 @@ export const useProjectStore = defineStore('project', () => {
 
   async function createProject(data: Partial<Project>) {
     try {
-      const response = await axios.post('/api/projects', data)
+      const response = await api.post('/api/projects', data)
       projects.value.push(response.data)
       return response.data
     } catch (error) {
@@ -66,14 +73,10 @@ export const useProjectStore = defineStore('project', () => {
 
   async function updateProject(id: string, data: Partial<Project>) {
     try {
-      const response = await axios.put(`/api/projects/${id}`, data)
+      const response = await api.put(`/api/projects/${id}`, data)
       const index = projects.value.findIndex(p => p.id === id)
-      if (index !== -1) {
-        projects.value[index] = response.data
-      }
-      if (currentProject.value?.id === id) {
-        currentProject.value = response.data
-      }
+      if (index !== -1) projects.value[index] = response.data
+      if (currentProject.value?.id === id) currentProject.value = response.data
       return response.data
     } catch (error) {
       console.error('更新项目失败:', error)
@@ -83,15 +86,60 @@ export const useProjectStore = defineStore('project', () => {
 
   async function deleteProject(id: string) {
     try {
-      await axios.delete(`/api/projects/${id}`)
+      await api.delete(`/api/projects/${id}`)
       projects.value = projects.value.filter(p => p.id !== id)
-      if (currentProject.value?.id === id) {
-        currentProject.value = null
-      }
+      if (currentProject.value?.id === id) currentProject.value = null
       return true
     } catch (error) {
       console.error('删除项目失败:', error)
       return false
+    }
+  }
+
+  // 导入大纲
+  async function importOutline(params: {
+    outline: any
+    project_name?: string
+    project_id?: string
+    auto_split?: boolean
+  }) {
+    try {
+      const response = await api.post('/api/outline/import', params)
+      await fetchProjects()
+      return response.data
+    } catch (error) {
+      console.error('导入大纲失败:', error)
+      return null
+    }
+  }
+
+  // 补全大纲
+  async function completeOutline(params: {
+    incomplete_outline: string
+    style?: string
+    project_id?: string
+  }) {
+    try {
+      const response = await api.post('/api/outline/complete', params)
+      return response.data
+    } catch (error) {
+      console.error('补全大纲失败:', error)
+      return null
+    }
+  }
+
+  // 合成大纲
+  async function mergeOutlines(params: {
+    outlines: string[]
+    style?: string
+    project_id?: string
+  }) {
+    try {
+      const response = await api.post('/api/outline/merge', params)
+      return response.data
+    } catch (error) {
+      console.error('合成大纲失败:', error)
+      return null
     }
   }
 
@@ -109,6 +157,9 @@ export const useProjectStore = defineStore('project', () => {
     createProject,
     updateProject,
     deleteProject,
+    importOutline,
+    completeOutline,
+    mergeOutlines,
     setCurrentProject
   }
 })

@@ -1,0 +1,57 @@
+灵墨小说工坊 · 交付清单（2026-06-15）
+
+【文件清单】
+- lingmo-novel-workshop-20260615-src.tar.gz（Linux / macOS 常用，tar -xzf ...）
+- lingmo-novel-workshop-20260615-src.zip（Windows 友好）
+- 使用说明.txt（本文件）
+
+【项目简介】
+基于 Electron + Vue3 + TypeScript + Element Plus + SQLite 的 Windows 桌面端网文创作工具。
+- 前端目录结构：
+  electron/      Electron 主进程与服务层（业务服务、IPC、数据库）
+  src/          Vue3 前端（路由、视图、组件、Pinia、i18n）
+  public/       静态资源
+  scripts/      打包/构建脚本
+  db/schema.sql SQLite 建表脚本
+
+【本地运行步骤】
+=== 方式一：开发模式（先构建前端 + Electron 启动）
+
+1) 构建前端资源
+   cd /workspace
+   npm install          # 安装 vue / 依赖
+   npm run build        # 产出 dist/
+
+2) 启动 Electron 桌面端
+   cd electron
+   npm install          # 安装 Electron 与 better-sqlite3（若遇下载问题，可配置 .npmrc 的 electron-mirror）
+   npm start            # 启动桌面窗口
+
+=== 方式二：生产打包（Windows）
+   cd electron
+   npm run build-win    # 使用 electron-builder 打包，输出到 electron/dist/xxx Setup.exe / xxx.exe
+
+【Windows 下常见 Electron 依赖下载问题（参考）
+- 若 Electron 二进制下载失败或证书问题，可在 Windows 用户目录新增 .npmrc 写入：
+  registry=https://registry.npmmirror.com
+  electron_mirror=https://npmmirror.com/mirrors/electron/
+  electron_builder_binaries_mirror=https://npmmirror.com/mirrors/electron-builder-binaries/
+  strict-ssl=false
+  npm cache clean --force
+  然后重新 npm install
+
+【模块与功能概览】
+- 作品中心：卡片式作品管理/回收站/模板创建/导入导出/重命名/删除/导出 JSON。
+- 正文创作：卷/章 目录，自动保存，历史版本，字数统计，Markdown/纯文本兼容。
+- AI 助手：续写/重写/润色/错别字/OOC/伏笔扫描/系统提示拼装/大纲生成。
+- 设定中枢：项目总设定/世界观/势力体系/物品库/伏笔追踪。
+- 角色管理：角色卡片（姓名/外貌/性格/身世/能力/弱点/首次登场/状态）+关系图谱（节点拖拽/连线颜色）。
+- 大纲创作：多层级树，AI 大纲生成/补全/优化，联动正文。
+- 润色工坊：左侧原文/右侧润色对比，一键采用。
+- 提示词库：分组、启用/禁用、编辑/删除、多模型。
+- AI 接口：多供应商、多 API Key、多模型、连通测试、默认模型配置。
+- RAG 三级记忆：简易（上下文+少量设定）/混合（知识图谱+向量）/兜底（关键词全项目检索）。
+- 追读力分析：钩子强度/爽点密度/伏笔回收/OOC，生成报表与建议。
+- 素材库：章节素材/大纲素材/人物设定/通用素材，支持 txt/md 文件导入并生成章节/大纲/角色。
+- 多语言：简体中文 / English，可通过设置切换。
+- 双主题：深色（默认水墨科技风） /浅色（清新简约）。

@@ -1,27 +1,35 @@
 <script setup lang="ts">
-import { useUiStore } from '@/stores/ui'
-const ui = useUiStore()
+import { useUiStore } from '@/stores/ui';
+import { useI18n } from '@/composables/useI18n';
+
+const ui = useUiStore();
+const { t } = useI18n();
 </script>
 
 <template>
   <div style="height:100%;overflow:auto;background:var(--bg)">
-    <div class="page-header"><h2>软件设置</h2><p>主题 / 快捷键 / 数据偏好</p></div>
+    <div class="page-header"><h2>{{ t('nav.settings') }}</h2><p>{{ t('settings.about') }}</p></div>
     <div style="padding:16px 28px 60px;max-width:1200px;margin:0 auto">
-      <div class="card">
-        <b>主题</b>
-        <p class="muted mt-8">深色 / 浅色全局切换，自动保存。</p>
-        <el-radio-group v-model="ui.theme" class="mt-12" @change="ui.toggleTheme()">
-          <el-radio-button label="dark">深色</el-radio-button>
-          <el-radio-button label="light">浅色</el-radio-button>
-        </el-radio-group>
+      <div class="card" style="margin-bottom: 14px;">
+        <b>{{ t('settings.theme') }}</b>
+        <div style="margin-top:10px; display:flex; gap:8px;">
+          <button :class="['btn', ui.theme === 'dark' ? 'primary' : '']" @click="ui.theme = 'dark'; ui.toggleTheme()">{{ t('settings.dark') }}</button>
+          <button :class="['btn', ui.theme === 'light' ? 'primary' : '']" @click="ui.theme = 'light'; ui.toggleTheme()">{{ t('settings.light') }}</button>
+        </div>
       </div>
-      <div class="card mt-16">
-        <b>关于</b>
-        <p class="muted mt-8">灵墨小说工坊 · 长篇网文创作辅助软件</p>
+      <div class="card" style="margin-bottom: 14px;">
+        <b>{{ t('settings.language') }}</b>
+        <div style="margin-top:10px; display:flex; gap:8px;">
+          <button :class="['btn', ui.locale === 'zh-CN' ? 'primary' : '']" @click="ui.setLocale('zh-CN')">简体中文</button>
+          <button :class="['btn', ui.locale === 'en-US' ? 'primary' : '']" @click="ui.setLocale('en-US')">English</button>
+        </div>
+      </div>
+      <div class="card">
+        <b>{{ t('settings.about') }}</b>
+        <p class="muted mt-8">{{ t('appName') }} · {{ t('appSubtitle') }}</p>
         <ul class="mt-8 muted" style="font-size:13px;line-height:1.8">
-          <li>本地数据：作品 / 章节 / 角色 / 设定全部本地存储，不联网也可使用。</li>
-          <li>AI 接口：按供应商/多模型切换、失败降级。</li>
-          <li>RAG：三级检索，防止长篇设定崩坏。</li>
+          <li>数据本地化存储，使用 SQLite，默认位于用户目录。</li>
+          <li>支持多题材作品、RAG 三级记忆、追读力分析与 AI 模型热切换。</li>
         </ul>
       </div>
     </div>

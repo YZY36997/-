@@ -96,16 +96,13 @@ function resetView() {
 }
 
 async function addRelation() {
-  if (characters.value.length < 2) {
-    ElMessage.warning('至少需要两个角色');
-    return;
-  }
+  if (characters.value.length < 2) { ElMessage.warning('至少需要两个角色'); return; }
   const from = characters.value[0];
   const to = characters.value[1];
   const label = window.prompt ? window.prompt('关系描述（例如：师徒 / 敌对）', '朋友') : '朋友';
   const typeMap: Record<string, string> = { '朋友': 'friend', '恋人': 'lover', '敌人': 'enemy', '师徒': 'mentor', '从属': 'subordinate', '对手': 'rival' };
   const type = typeMap[label || ''] || 'friend';
-  await lingmo.invoke(lingmo.ACTIONS.CHARACTER_RELATION_CREATE, { project_id: projectId.value, from: from.id, to: to.id, type, label });
+  await lingmo.invoke(lingmo.ACTIONS.CHARACTER_RELATION_CREATE, { project_id: projectId.value, source_id: from.id, target_id: to.id, relation_type: type, label });
   load();
 }
 
@@ -145,19 +142,19 @@ onMounted(() => {
         <g :transform="`translate(${view.tx},${view.ty}) scale(${view.scale})`">
           <g v-for="r in relations" :key="'r'+r.id">
             <line
-              v-if="nodeOf(r.from_id) && nodeOf(r.to_id)"
-              :x1="nodeOf(r.from_id).x" :y1="nodeOf(r.from_id).y"
-              :x2="nodeOf(r.to_id).x" :y2="nodeOf(r.to_id).y"
-              :stroke="relColor(r.type)" stroke-width="2"
+              v-if="nodeOf(r.source_id) && nodeOf(r.target_id)"
+              :x1="nodeOf(r.source_id).x" :y1="nodeOf(r.source_id).y"
+              :x2="nodeOf(r.target_id).x" :y2="nodeOf(r.target_id).y"
+              :stroke="relColor(r.relation_type)" stroke-width="2"
               stroke-dasharray="4,3" opacity="0.9"
             />
             <text
-              v-if="nodeOf(r.from_id) && nodeOf(r.to_id)"
-              :x="(nodeOf(r.from_id).x + nodeOf(r.to_id).x)/2"
-              :y="(nodeOf(r.from_id).y + nodeOf(r.to_id).y)/2 - 8"
+              v-if="nodeOf(r.source_id) && nodeOf(r.target_id)"
+              :x="(nodeOf(r.source_id).x + nodeOf(r.target_id).x)/2"
+              :y="(nodeOf(r.source_id).y + nodeOf(r.target_id).y)/2 - 8"
               text-anchor="middle"
               fill="#8e9ab8" font-size="11px"
-            >{{ r.label || r.type }}</text>
+            >{{ r.label || r.relation_type }}</text>
           </g>
           <g v-for="c in characters" :key="'n'+c.id"
              :transform="`translate(${c.x - 50},${c.y - 16})`"
@@ -174,12 +171,12 @@ onMounted(() => {
       <div style="font-weight:600">关系列表</div>
       <el-table :data="relations" size="small" class="mt-12">
         <el-table-column label="角色 A" width="200">
-          <template #default="{ row }">{{ nodeOf(row.from_id)?.name || '?' }}</template>
+          <template #default="{ row }">{{ nodeOf(row.source_id)?.name || '?' }}</template>
         </el-table-column>
         <el-table-column label="角色 B" width="200">
-          <template #default="{ row }">{{ nodeOf(row.to_id)?.name || '?' }}</template>
+          <template #default="{ row }">{{ nodeOf(row.target_id)?.name || '?' }}</template>
         </el-table-column>
-        <el-table-column prop="type" label="类型" width="120" />
+        <el-table-column prop="relation_type" label="类型" width="120" />
         <el-table-column prop="label" label="描述" />
         <el-table-column label="操作" width="120">
           <template #default="{ row }">

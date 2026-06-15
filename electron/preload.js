@@ -1,80 +1,12 @@
-/** Electron 预加载脚本：暴露安全 API 给前端 */
+/** preload：向前端暴露安全的 lingmo API */
 const { contextBridge, ipcRenderer } = require('electron');
 
-contextBridge.exposeInMainWorld('lingmo', {
+const api = {
   invoke: (action, args) => ipcRenderer.invoke('lingmo:invoke', action, args),
-  onEvent: (ch, cb) => {
-    const h = (_e, d) => cb(d);
-    ipcRenderer.on(ch, h);
-    return () => ipcRenderer.removeListener(ch, h);
-  },
-  ACTIONS: {
-    SYS_PING: 'sys.ping',
-    SYS_GET_THEME: 'sys.getTheme',
-    SYS_SET_THEME: 'sys.setTheme',
-    PROJECT_LIST: 'project.list',
-    PROJECT_GET: 'project.get',
-    PROJECT_CREATE: 'project.create',
-    PROJECT_UPDATE: 'project.update',
-    PROJECT_DELETE: 'project.delete',
-    PROJECT_SETTINGS_GET: 'projectSettings.get',
-    PROJECT_SETTINGS_SAVE: 'projectSettings.save',
-    WORLDVIEW_GET: 'worldview.get',
-    WORLDVIEW_SAVE: 'worldview.save',
-    VOLUME_LIST: 'volume.list',
-    VOLUME_CREATE: 'volume.create',
-    VOLUME_UPDATE: 'volume.update',
-    VOLUME_DELETE: 'volume.delete',
-    CHAPTER_LIST: 'chapter.list',
-    CHAPTER_GET: 'chapter.get',
-    CHAPTER_CREATE: 'chapter.create',
-    CHAPTER_UPDATE: 'chapter.update',
-    CHAPTER_DELETE: 'chapter.delete',
-    CHAPTER_CONTENT_GET: 'chapterContent.get',
-    CHAPTER_CONTENT_SAVE: 'chapterContent.save',
-    CHAPTER_CONTENT_HISTORY: 'chapterContent.history',
-    CHARACTER_LIST: 'character.list',
-    CHARACTER_CREATE: 'character.create',
-    CHARACTER_UPDATE: 'character.update',
-    CHARACTER_DELETE: 'character.delete',
-    CHARACTER_RELATION_LIST: 'characterRelation.list',
-    CHARACTER_RELATION_CREATE: 'characterRelation.create',
-    CHARACTER_RELATION_UPDATE: 'characterRelation.update',
-    CHARACTER_RELATION_DELETE: 'characterRelation.delete',
-    FORESHADOW_LIST: 'foreshadow.list',
-    FORESHADOW_CREATE: 'foreshadow.create',
-    FORESHADOW_UPDATE: 'foreshadow.update',
-    FORESHADOW_DELETE: 'foreshadow.delete',
-    OUTLINE_TREE: 'outline.tree',
-    OUTLINE_NODE_SAVE: 'outline.save',
-    OUTLINE_NODE_DELETE: 'outline.delete',
-    PROMPT_GROUP_LIST: 'promptGroup.list',
-    PROMPT_GROUP_SAVE: 'promptGroup.save',
-    PROMPT_GROUP_DELETE: 'promptGroup.delete',
-    PROMPT_LIST: 'prompt.list',
-    PROMPT_CREATE: 'prompt.create',
-    PROMPT_UPDATE: 'prompt.update',
-    PROMPT_DELETE: 'prompt.delete',
-    AI_MODEL_LIST: 'aiModel.list',
-    AI_MODEL_SAVE: 'aiModel.save',
-    AI_MODEL_DELETE: 'aiModel.delete',
-    AI_MODEL_TEST: 'aiModel.test',
-    AI_CONTINUE: 'ai.continue',
-    AI_REWRITE: 'ai.rewrite',
-    AI_POLISH: 'ai.polish',
-    AI_DIALOG_SCENE: 'ai.dialogScene',
-    AI_CHECK_OOC: 'ai.checkOoc',
-    AI_CHECK_TYPO: 'ai.checkTypo',
-    AI_FORESHADOW_SCAN: 'ai.foreshadowScan',
-    AI_GENERATE_OUTLINE: 'ai.generateOutline',
-    AI_GENERATE_IDEA: 'ai.generateIdea',
-    RAG_BUILD: 'rag.build',
-    RAG_RETRIEVE: 'rag.retrieve',
-    RAG_FILTER_GET: 'rag.filterGet',
-    RAG_FILTER_SAVE: 'rag.filterSave',
-    ANALYSIS_CHAPTER: 'analysis.chapter',
-    ANALYSIS_PROJECT: 'analysis.project'
+  onEvent: (channel, cb) => {
+    const handler = (_e, d) => cb(d);
+    ipcRenderer.on(channel, handler);
+    return () => ipcRenderer.removeListener(channel, handler);
   }
-});
-
-contextBridge.exposeInMainWorld('__LINGMO__', { platform: 'electron', version: '1.0.0' });
+};
+contextBridge.exposeInMainWorld('lingmo', api);

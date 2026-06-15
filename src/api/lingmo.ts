@@ -1,21 +1,40 @@
-/** 前端 API：Electron 环境下使用 preload 暴露的 lingmo，否则降级 */
+/** 前端对 Electron IPC 的统一封装 + 动作常量 */
+type LingmoResult<T = any> = { ok: boolean; data: T; error?: string };
 
-// 暴露字符串动作常量（与 Electron 主进程 switch case 保持一致）
-const ACTIONS = {
+declare global {
+  interface Window {
+    lingmo: {
+      invoke: (action: string, args?: any) => Promise<LingmoResult>;
+      onEvent: (channel: string, cb: (data: any) => void) => () => void;
+    };
+  }
+}
+
+export const ACTIONS = {
   SYS_PING: 'sys.ping',
   SYS_GET_THEME: 'sys.getTheme',
   SYS_SET_THEME: 'sys.setTheme',
 
   PROJECT_LIST: 'project.list',
+  PROJECT_RECYCLE: 'project.recycle',
   PROJECT_GET: 'project.get',
   PROJECT_CREATE: 'project.create',
   PROJECT_UPDATE: 'project.update',
   PROJECT_DELETE: 'project.delete',
+  PROJECT_RESTORE: 'project.restore',
+  PROJECT_EXPORT: 'project.export',
 
   PROJECT_SETTINGS_GET: 'projectSettings.get',
   PROJECT_SETTINGS_SAVE: 'projectSettings.save',
   WORLDVIEW_GET: 'worldview.get',
   WORLDVIEW_SAVE: 'worldview.save',
+
+  FACTION_LIST: 'faction.list',
+  FACTION_SAVE: 'faction.save',
+  FACTION_DELETE: 'faction.delete',
+  ARTIFACT_LIST: 'artifact.list',
+  ARTIFACT_SAVE: 'artifact.save',
+  ARTIFACT_DELETE: 'artifact.delete',
 
   VOLUME_LIST: 'volume.list',
   VOLUME_CREATE: 'volume.create',
@@ -35,7 +54,6 @@ const ACTIONS = {
   CHARACTER_CREATE: 'character.create',
   CHARACTER_UPDATE: 'character.update',
   CHARACTER_DELETE: 'character.delete',
-
   CHARACTER_RELATION_LIST: 'characterRelation.list',
   CHARACTER_RELATION_CREATE: 'characterRelation.create',
   CHARACTER_RELATION_UPDATE: 'characterRelation.update',
@@ -44,11 +62,12 @@ const ACTIONS = {
   FORESHADOW_LIST: 'foreshadow.list',
   FORESHADOW_CREATE: 'foreshadow.create',
   FORESHADOW_UPDATE: 'foreshadow.update',
+  FORESHADOW_SAVE: 'foreshadow.update',
   FORESHADOW_DELETE: 'foreshadow.delete',
 
   OUTLINE_TREE: 'outline.tree',
-  OUTLINE_NODE_SAVE: 'outline.save',
-  OUTLINE_NODE_DELETE: 'outline.delete',
+  OUTLINE_SAVE: 'outline.save',
+  OUTLINE_DELETE: 'outline.delete',
 
   PROMPT_GROUP_LIST: 'promptGroup.list',
   PROMPT_GROUP_SAVE: 'promptGroup.save',
@@ -72,32 +91,47 @@ const ACTIONS = {
   AI_FORESHADOW_SCAN: 'ai.foreshadowScan',
   AI_GENERATE_OUTLINE: 'ai.generateOutline',
   AI_GENERATE_IDEA: 'ai.generateIdea',
+  AI_BUILD_SYSTEM_PROMPT: 'ai.buildSystemPrompt',
 
-  RAG_BUILD: 'rag.build',
   RAG_RETRIEVE: 'rag.retrieve',
   RAG_FILTER_GET: 'rag.filterGet',
   RAG_FILTER_SAVE: 'rag.filterSave',
 
   ANALYSIS_CHAPTER: 'analysis.chapter',
-  ANALYSIS_PROJECT: 'analysis.project'
+  ANALYSIS_PROJECT: 'analysis.project',
+
+  // 素材库
+  MATERIAL_LIST: 'material.list',
+  MATERIAL_GET: 'material.get',
+  MATERIAL_SAVE: 'material.save',
+  MATERIAL_DELETE: 'material.delete',
+  MATERIAL_BULK_IMPORT: 'material.bulkImport',
+  MATERIAL_IMPORT_CHAPTER_TEXT: 'material.importChapterText',
+  MATERIAL_IMPORT_OUTLINE_TEXT: 'material.importOutlineText',
+  MATERIAL_IMPORT_CHARACTER_TEXT: 'material.importCharacterText',
+
+  // 语言 / 全局设置
+  SYS_GET_LOCALE: 'sys.getLocale',
+  SYS_SET_LOCALE: 'sys.setLocale',
+  SETTINGS_GET_ALL: 'settings.getAll',
+  SETTINGS_SET: 'settings.set'
 };
 
-// 判断环境并选择调用方式
-async function invoke(action, args) {
-  const w = (typeof window !== 'undefined') ? (window as any) : null;
-  if (w && w.lingmo && typeof w.lingmo.invoke === 'function') {
-    try {
-      const res = await w.lingmo.invoke(action, args || {});
-      if (res && res.ok) return { ok: true, data: res.data };
-      return { ok: false, error: res?.error || '失败', data: null };
-    } catch (e) {
-      return { ok: false, error: (e as any).message || String(e), data: null };
+export const lingmo = {
+  async invoke<T = any>(action: string, args?: any): Promise<{ ok: boolean; data: T; error?: string }> {
+    const w = typeof window !== 'undefined' ? window : null;
+    if (w && w.lingmo && typeof w.lingmo.invoke === 'function') {
+      try {
+        const r = await w.lingmo.invoke(action, args || {});
+        if (r && r.ok) return { ok: true, data: r.data as T };
+        return { ok: false, data: null as any, error: r?.error || '失败' };
+      } catch (e: any) {
+        return { ok: false, data: null as any, error: e.message || String(e) };
+      }
     }
-  }
-  // 浏览器降级：返回提示数据（开发调试用）
-  console.warn('[lingmo] 未检测到 Electron 环境，使用模拟数据');
-  return { ok: true, data: {} };
-}
-
-export const lingmo = { invoke, ACTIONS };
-export default lingmo;
+    // 开发期在浏览器中给出友好提示，不中断页面
+    console.warn('[lingmo] 未检测到 Electron 环境，该动作返回空：', action);
+    return { ok: false, data: null as any, error: 'no-electron' };
+  },
+  ACTIONS
+};

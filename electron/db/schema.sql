@@ -324,6 +324,29 @@ CREATE TABLE IF NOT EXISTS recycle_bin (
 );
 
 -- ---------------------------------------------------------------------
--- 17. 应用记录版本
+-- 18. 素材库（章节素材 / 大纲素材 / 角色设定素材 / 通用素材）
+--    支持从外部 .txt / .md 导入，按项目 / 分类进行管理
+-- ---------------------------------------------------------------------
+CREATE TABLE IF NOT EXISTS materials (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    project_id    INTEGER,                           -- 全局素材可为空
+    category      TEXT DEFAULT 'general',            -- chapter / outline / character / general / worldbuilding
+    title         TEXT NOT NULL,
+    body          TEXT,                              -- 素材正文（支持纯文本 / Markdown）
+    source_file   TEXT,                              -- 原始文件路径（可选）
+    tags          TEXT,                              -- 逗号分隔 / JSON 数组
+    notes         TEXT,
+    sort_order    INTEGER DEFAULT 0,
+    created_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at    TEXT DEFAULT CURRENT_TIMESTAMP,
+    FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_materials_project ON materials(project_id);
+CREATE INDEX IF NOT EXISTS idx_materials_category ON materials(category);
+
+-- ---------------------------------------------------------------------
+-- 19. 语言 / 数据存储偏好设置
+--    settings 表足够承载；这里通过 schema_migrations 标记能力
 -- ---------------------------------------------------------------------
 INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (1, 'init-schema');
+INSERT OR IGNORE INTO schema_migrations (version, name) VALUES (2, 'materials-and-i18n');

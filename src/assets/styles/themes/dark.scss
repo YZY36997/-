@@ -1,0 +1,16 @@
+:root[data-theme='dark'] {
+  --bg: #0f0f18;
+  --surface: #151824;
+  --surface-2: #1b1f2d;
+  --border: rgba(130, 145, 190, 0.18);
+  --border-strong: rgba(140, 160, 220, 0.3);
+  --text: #e6e8ef;
+  --text-muted: #8e9ab8;
+  --primary: #5fb4ff;
+  --accent: #8b6bff;
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger: #ff6b6b;
+  --card-shadow: 0 8px 32px rgba(0,0,0,0.35);
+  --bg-gradient: radial-gradient(ellipse at top, rgba(95, 180, 255, 0.08), transparent 60%);
+}

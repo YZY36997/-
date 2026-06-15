@@ -1,0 +1,42 @@
+{
+  "name": "lingmo-novel-workshop-electron",
+  "version": "1.0.0",
+  "description": "灵墨小说工坊 - Electron 容器",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "pack": "electron-builder --win --x64 --dir",
+    "dist": "electron-builder --win --x64"
+  },
+  "devDependencies": {
+    "electron": "^30.0.0",
+    "electron-builder": "^24.13.0"
+  },
+  "build": {
+    "appId": "com.lingmo.novelworkshop",
+    "productName": "灵墨小说工坊",
+    "files": [
+      "main.js",
+      "preload.js",
+      "services.js",
+      "db/**/*",
+      "../dist/**/*"
+    ],
+    "directories": {
+      "output": "release"
+    },
+    "win": {
+      "target": [
+        { "target": "nsis", "arch": ["x64"] },
+        { "target": "zip", "arch": ["x64"] }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "perMachine": false,
+      "createDesktopShortcut": true,
+      "shortcutName": "灵墨小说工坊"
+    }
+  }
+}

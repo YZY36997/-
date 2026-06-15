@@ -1,79 +1,23 @@
-import { createRouter, createWebHashHistory } from 'vue-router'
+import { createRouter, createWebHashHistory, RouteRecordRaw } from 'vue-router';
 
-const router = createRouter({
-  history: createWebHashHistory(),
-  routes: [
-    {
-      path: '/',
-      name: 'home',
-      component: () => import('../views/HomePage.vue')
-    },
-    {
-      path: '/projects',
-      name: 'projects',
-      component: () => import('../views/ProjectList.vue')
-    },
-    {
-      path: '/material-center',
-      name: 'material-center',
-      component: () => import('../views/MaterialCenter.vue')
-    },
-    {
-      path: '/creation/:projectId?',
-      name: 'creation',
-      component: () => import('../views/CreationPage.vue')
-    },
-    {
-      path: '/templates',
-      name: 'templates',
-      component: () => import('../views/TemplateLibrary.vue')
-    },
-    {
-      path: '/settings',
-      name: 'settings',
-      component: () => import('../views/SettingsPage.vue')
-    },
-    {
-      path: '/setting-hub/:projectId?',
-      name: 'setting-hub',
-      component: () => import('../views/SettingHub.vue')
-    },
-    {
-      path: '/relation-graph/:projectId?',
-      name: 'relation-graph',
-      component: () => import('../views/RelationGraph.vue')
-    },
-    {
-      path: '/analysis/:projectId?',
-      name: 'analysis-dashboard',
-      component: () => import('../views/AnalysisDashboard.vue')
-    },
-    {
-      path: '/rules-engine',
-      name: 'rules-engine',
-      component: () => import('../views/RulesEnginePage.vue')
-    },
-    {
-      path: '/prompts-workshop',
-      name: 'prompts-workshop',
-      component: () => import('../views/PromptsWorkshop.vue')
-    },
-    {
-      path: '/models-config',
-      name: 'models-config',
-      component: () => import('../views/ModelsConfigPage.vue')
-    },
-    {
-      path: '/world-template',
-      name: 'world-template',
-      component: () => import('../views/WorldTemplatePage.vue')
-    },
-    {
-      path: '/foreshadow/:projectId?',
-      name: 'foreshadow-panel',
-      component: () => import('../views/ForeshadowPanel.vue')
-    }
-  ]
-})
+const routes: RouteRecordRaw[] = [
+  { path: '/', redirect: '/home' },
+  { path: '/home', name: 'home', component: () => import('@/views/HomeView.vue'), meta: { title: '作品中心' } },
+  { path: '/editor', name: 'editor', component: () => import('@/views/EditorView.vue'), meta: { title: '正文创作' } },
+  { path: '/hub', name: 'hub', component: () => import('@/views/HubView.vue'), meta: { title: '设定中枢' } },
+  { path: '/characters', name: 'characters', component: () => import('@/views/CharactersView.vue'), meta: { title: '角色管理' } },
+  { path: '/graph', name: 'graph', component: () => import('@/views/GraphView.vue'), meta: { title: '人物关系图谱' } },
+  { path: '/outline', name: 'outline', component: () => import('@/views/OutlineView.vue'), meta: { title: '大纲创作' } },
+  { path: '/polish', name: 'polish', component: () => import('@/views/PolishView.vue'), meta: { title: '润色工坊' } },
+  { path: '/prompts', name: 'prompts', component: () => import('@/views/PromptsView.vue'), meta: { title: '提示词库' } },
+  { path: '/ai-config', name: 'ai-config', component: () => import('@/views/AiConfigView.vue'), meta: { title: 'AI 接口配置' } },
+  { path: '/rag', name: 'rag', component: () => import('@/views/RagView.vue'), meta: { title: 'RAG 长效记忆' } },
+  { path: '/analysis', name: 'analysis', component: () => import('@/views/AnalysisView.vue'), meta: { title: '追读力分析' } },
+  { path: '/settings', name: 'settings', component: () => import('@/views/SettingsView.vue'), meta: { title: '软件设置' } }
+];
 
-export default router
+const router = createRouter({ history: createWebHashHistory(), routes });
+router.afterEach((to) => {
+  document.title = `${(to.meta?.title as string) || '灵墨小说工坊'} · 灵墨小说工坊`;
+});
+export default router;

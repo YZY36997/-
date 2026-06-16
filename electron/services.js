@@ -36,10 +36,13 @@ const projectService = {
     return { id: info.lastInsertRowid };
   },
   update(id, data) {
+    const cur = getDb().prepare('SELECT * FROM projects WHERE id = ?').get(id);
+    if (!cur) return;
     getDb().prepare(
       'UPDATE projects SET name = ?, genre = ?, description = ?, cover_data = ?, status = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?'
     ).run(
-      data.name, data.genre, data.description || '', data.cover_data || null, data.status || 'serializing', id
+      data.name ?? cur.name, data.genre ?? cur.genre, data.description ?? cur.description ?? '',
+      data.cover_data ?? cur.cover_data ?? null, data.status ?? cur.status ?? 'serializing', id
     );
   },
   softDelete(id) {
@@ -148,7 +151,12 @@ const volumeService = {
       .run(projectId, title || '新卷', projectId);
     return { id: info.lastInsertRowid };
   },
-  update(id, data) { getDb().prepare('UPDATE volumes SET title = ?, summary = ? WHERE id = ?').run(data.title || '', data.summary || '', id); },
+  update(id, data) {
+    const cur = getDb().prepare('SELECT * FROM volumes WHERE id = ?').get(id);
+    if (!cur) return;
+    getDb().prepare('UPDATE volumes SET title = ?, summary = ? WHERE id = ?')
+      .run(data.title ?? cur.title, data.summary ?? cur.summary ?? '', id);
+  },
   remove(id) { getDb().prepare('DELETE FROM volumes WHERE id = ?').run(id); }
 };
 
@@ -162,8 +170,17 @@ const chapterService = {
     return { id: info.lastInsertRowid };
   },
   update(id, data) {
+    const cur = getDb().prepare('SELECT * FROM chapters WHERE id = ?').get(id);
+    if (!cur) return;
+    const next = {
+      title: data.title ?? cur.title,
+      summary: data.summary ?? cur.summary,
+      status: data.status ?? cur.status,
+      volume_id: data.volume_id ?? cur.volume_id,
+      parent_id: data.parent_id ?? cur.parent_id
+    };
     getDb().prepare('UPDATE chapters SET title = ?, summary = ?, status = ?, volume_id = ?, parent_id = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?')
-      .run(data.title, data.summary || '', data.status || 'todo', data.volume_id || null, data.parent_id || null, id);
+      .run(next.title, next.summary || '', next.status || 'todo', next.volume_id || null, next.parent_id || null, id);
   },
   remove(id) {
     getDb().prepare('DELETE FROM chapter_contents WHERE chapter_id = ?').run(id);
@@ -206,15 +223,20 @@ const characterService = {
     return { id: info.lastInsertRowid };
   },
   update(id, data) {
+    const cur = getDb().prepare('SELECT * FROM characters WHERE id = ?').get(id);
+    if (!cur) return;
     getDb().prepare(
       `UPDATE characters SET name = ?, role = ?, appearance = ?, personality = ?, background = ?,
         abilities = ?, weakness = ?, first_chapter = ?, current_status = ?, relationships = ?,
         pos_x = ?, pos_y = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
     ).run(
-      data.name, data.role || 'supporting', data.appearance || '', data.personality || '',
-      data.background || '', data.abilities || '', data.weakness || '', data.first_chapter || '',
-      data.current_status || '', data.relationships || '',
-      typeof data.pos_x === 'number' ? data.pos_x : 0, typeof data.pos_y === 'number' ? data.pos_y : 0, id
+      data.name ?? cur.name, data.role ?? cur.role ?? 'supporting',
+      data.appearance ?? cur.appearance ?? '', data.personality ?? cur.personality ?? '',
+      data.background ?? cur.background ?? '', data.abilities ?? cur.abilities ?? '',
+      data.weakness ?? cur.weakness ?? '', data.first_chapter ?? cur.first_chapter ?? '',
+      data.current_status ?? cur.current_status ?? '', data.relationships ?? cur.relationships ?? '',
+      typeof data.pos_x === 'number' ? data.pos_x : (cur.pos_x ?? 0),
+      typeof data.pos_y === 'number' ? data.pos_y : (cur.pos_y ?? 0), id
     );
   },
   remove(id) { getDb().prepare('DELETE FROM characters WHERE id = ?').run(id); }
@@ -236,8 +258,11 @@ const characterRelationService = {
     return { id: info.lastInsertRowid };
   },
   update(id, data) {
+    const cur = getDb().prepare('SELECT * FROM character_relations WHERE id = ?').get(id);
+    if (!cur) return;
     getDb().prepare('UPDATE character_relations SET relation_type = ?, label = ?, weight = ?, note = ? WHERE id = ?')
-      .run(data.relation_type || 'friend', data.label || '', data.weight || 1, data.note || '', id);
+      .run(data.relation_type ?? cur.relation_type ?? 'friend', data.label ?? cur.label ?? '',
+        data.weight ?? cur.weight ?? 1, data.note ?? cur.note ?? '', id);
   },
   remove(id) { getDb().prepare('DELETE FROM character_relations WHERE id = ?').run(id); }
 };
@@ -285,9 +310,14 @@ const foreshadowService = {
     return { id: info.lastInsertRowid };
   },
   update(id, data) {
+    const cur = getDb().prepare('SELECT * FROM foreshadowings WHERE id = ?').get(id);
+    if (!cur) return;
     getDb().prepare('UPDATE foreshadowings SET title = ?, content = ?, status = ?, planted_chapter_id = ?, recovered_chapter_id = ?, priority = ? WHERE id = ?')
-      .run(data.title, data.content || '', data.status || 'todo',
-        data.planted_chapter_id || null, data.recovered_chapter_id || null, data.priority || 2, id);
+      .run(data.title ?? cur.title, data.content ?? cur.content ?? '',
+        data.status ?? cur.status ?? 'todo',
+        data.planted_chapter_id ?? cur.planted_chapter_id ?? null,
+        data.recovered_chapter_id ?? cur.recovered_chapter_id ?? null,
+        data.priority ?? cur.priority ?? 2, id);
   },
   remove(id) { getDb().prepare('DELETE FROM foreshadowings WHERE id = ?').run(id); }
 };
@@ -296,7 +326,27 @@ const foreshadowService = {
 const outlineService = {
   tree(projectId) { return getDb().prepare('SELECT * FROM outlines WHERE project_id = ? ORDER BY sort_order ASC, id ASC').all(projectId); },
   save(projectId, data) {
-    const goal = data.goal || data.core_goal || '';
+    let goal = data.goal || data.core_goal || '';
+    let summary = data.summary || '';
+    let plot = data.plot || '';
+    let pleasure = data.pleasure || '';
+    let foreshadow = data.foreshadow || '';
+    let mood = data.mood || '';
+    let body = data.body || '';
+    let title = data.title || '';
+    if (data.id) {
+      const cur = getDb().prepare('SELECT * FROM outlines WHERE id = ?').get(data.id);
+      if (cur) {
+        goal = goal || cur.goal || '';
+        summary = summary || cur.summary || '';
+        plot = plot || cur.plot || '';
+        pleasure = pleasure || cur.pleasure || '';
+        foreshadow = foreshadow || cur.foreshadow || '';
+        mood = mood || cur.mood || '';
+        body = body || cur.body || '';
+        title = title || cur.title || '';
+      }
+    }
     const info = getDb().prepare(
       `INSERT INTO outlines (id, project_id, parent_id, level, title, goal, summary, plot, pleasure, foreshadow, mood, body, sort_order)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -305,9 +355,8 @@ const outlineService = {
          summary = excluded.summary, plot = excluded.plot, pleasure = excluded.pleasure, foreshadow = excluded.foreshadow,
          mood = excluded.mood, body = excluded.body, sort_order = excluded.sort_order`
     ).run(
-      data.id || null, projectId, data.parent_id || null, data.level || 2, data.title || '',
-      goal, data.summary || '', data.plot || '', data.pleasure || '', data.foreshadow || '',
-      data.mood || '', data.body || '', data.sort_order || 0
+      data.id || null, projectId, data.parent_id || null, data.level || 2, title,
+      goal, summary, plot, pleasure, foreshadow, mood, body, data.sort_order || 0
     );
     return { id: data.id || info.lastInsertRowid };
   },
@@ -345,8 +394,8 @@ const promptService = {
     return { id: info.lastInsertRowid };
   },
   update(id, data) {
-    getDb().prepare('UPDATE prompts SET group_id = ?, name = ?, content = ?, enabled = ?, priority = ? WHERE id = ?')
-      .run(data.group_id, data.name, data.content || '', data.enabled ? 1 : 0, data.priority || 1, id);
+    getDb().prepare('UPDATE prompts SET group_id = ?, project_id = ?, name = ?, content = ?, enabled = ?, priority = ? WHERE id = ?')
+      .run(data.group_id, data.project_id || null, data.name, data.content || '', data.enabled ? 1 : 0, data.priority || 1, id);
   },
   remove(id) { getDb().prepare('DELETE FROM prompts WHERE id = ?').run(id); }
 };
@@ -583,7 +632,7 @@ const ragService = {
     if (wl && wl.scope) {
       try {
         const sc = JSON.parse(wl.scope);
-        result = result.filter(h => !h.id || !sc || !(sc as any).length || (sc as any).includes(h.type));
+        result = result.filter(h => !h.id || !sc || !sc.length || sc.includes(h.type));
       } catch (_) {}
     }
     if (bl && bl.scope) {
@@ -648,7 +697,7 @@ function analyzeProject(projectId) {
 const materialService = {
   list(projectId, category) {
     let sql = 'SELECT * FROM materials WHERE 1=1';
-    const params: any[] = [];
+    const params = [];
     if (projectId) { sql += ' AND (project_id = ? OR project_id IS NULL)'; params.push(projectId); }
     else { sql += ' AND project_id IS NULL'; }
     if (category) { sql += ' AND category = ?'; params.push(category); }
@@ -696,10 +745,10 @@ const materialService = {
   importChapterText(projectId, volumeId, text, splitByBlankLine) {
     if (!text) return { imported: 0 };
     const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
-    const chapters: any[] = [];
+    const chapters = [];
     if (splitByBlankLine) {
-      const blocks: string[] = [];
-      let buf: string[] = [];
+      const blocks = [];
+      let buf = [];
       for (const l of text.split(/\r?\n/)) {
         if (l.trim() === '') {
           if (buf.length) { blocks.push(buf.join('\n')); buf = []; }
@@ -712,7 +761,7 @@ const materialService = {
       }
     } else {
       // 按 "第X章/第X回/Chapter X" 分组
-      let cur: any = null;
+      let cur = null;
       const re = /^(第[一二三四五六七八九十百千万\d0-9]+[章回卷节]|Chapter\s*\d+|章节\s*\d+)/i;
       for (const raw of text.split(/\r?\n/)) {
         const line = raw.trim();
@@ -751,7 +800,7 @@ const materialService = {
   },
   importOutlineText(projectId, text) {
     const lines = (text || '').split(/\r?\n/).filter(l => l.trim());
-    const nodes: any[] = [];
+    const nodes = [];
     for (let i = 0; i < lines.length; i++) {
       const raw = lines[i].trim();
       const indentMatch = raw.match(/^(\s*)([-*#>·]+)?\s*(.*)$/);
@@ -785,8 +834,8 @@ const materialService = {
         const lines = b.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
         if (!lines.length) continue;
         let name = lines[0];
-        const others: Record<string, string> = { personality: '', background: '', abilities: '', weakness: '', first_chapter: '', current_status: '' };
-        let cur: string | null = null;
+        const others = { personality: '', background: '', abilities: '', weakness: '', first_chapter: '', current_status: '' };
+        let cur = null;
         for (let i = 1; i < lines.length; i++) {
           const m = lines[i].match(/^(性格|背景|身世|能力|弱点|登场|状态|personality|background|abilities|weakness|first|status)[：:]/i);
           if (m) { cur = m[0].replace(/[：:].*$/, ''); continue; }
@@ -825,7 +874,7 @@ function setSetting(key, value) {
 }
 function allSettings() {
   const rows = getDb().prepare('SELECT key, value FROM settings').all();
-  const out: Record<string, any> = {};
+  const out = {};
   for (const r of rows) out[r.key] = r.value;
   return out;
 }

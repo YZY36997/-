@@ -8,6 +8,9 @@
     "pack": "electron-builder --win --x64 --dir",
     "dist": "electron-builder --win --x64"
   },
+  "dependencies": {
+    "better-sqlite3": "^11.3.0"
+  },
   "devDependencies": {
     "electron": "^30.0.0",
     "electron-builder": "^24.13.0"

@@ -14,7 +14,7 @@ const quick = ref<any>({ hook_hits: 0, hook_strength: 0, cool_points: 0, typos: 
 const projectReport = ref<any>({ total_chapters: 0, total_words: 0, foreshadow_total: 0, foreshadow_resolved: 0 })
 
 async function analyzeQuick() {
-  const r = await lingmo.invoke(lingmo.ACTIONS.ANALYSIS_CHAPTER, { content: content.value })
+  const r = await lingmo.invoke(lingmo.ACTIONS.ANALYSIS_CHAPTER, { content: content.value, project_id: projectId.value })
   quick.value = r.ok && r.data ? r.data : quick.value
 }
 
@@ -42,6 +42,10 @@ onMounted(async () => {
           <div class="stat"><div class="n">{{ projectReport.total_words }}</div><div class="l muted">总字数</div></div>
           <div class="stat"><div class="n">{{ projectReport.foreshadow_total }}</div><div class="l muted">伏笔总数</div></div>
           <div class="stat"><div class="n">{{ projectReport.foreshadow_resolved }}</div><div class="l muted">已回收</div></div>
+          <div class="stat"><div class="n">{{ projectReport.recent_hook_avg }}</div><div class="l muted">平均钩子强度</div></div>
+          <div class="stat"><div class="n">{{ projectReport.recent_pleasure_avg }}</div><div class="l muted">平均爽点密度</div></div>
+          <div class="stat"><div class="n">{{ projectReport.recent_ooc_risk }}</div><div class="l muted">OOC 风险</div></div>
+          <div class="stat"><div class="n">{{ projectReport.foreshadow_planted }}</div><div class="l muted">已埋未回收</div></div>
         </div>
         <div class="muted mt-16" style="font-size:13px">
           回收进度：{{ projectReport.foreshadow_total
@@ -50,14 +54,23 @@ onMounted(async () => {
       </div>
 
       <div class="card">
-        <b>章节快速分析</b>
+        <b>章节快速分析（关键词快扫 + 模型深度）</b>
         <el-input v-model="content" type="textarea" :rows="6" class="mt-12" />
         <el-button type="primary" class="mt-12" @click="analyzeQuick">开始分析</el-button>
         <div class="stat-grid mt-16">
           <div class="stat"><div class="n">{{ quick.hook_hits }}</div><div class="l muted">钩子命中</div></div>
           <div class="stat"><div class="n">{{ quick.hook_strength }}</div><div class="l muted">钩子强度</div></div>
-          <div class="stat"><div class="n">{{ quick.cool_points }}</div><div class="l muted">爽点</div></div>
-          <div class="stat"><div class="n">{{ quick.typos }}</div><div class="l muted">疑似错字</div></div>
+          <div class="stat"><div class="n">{{ quick.pleasure_hits }}</div><div class="l muted">爽点命中</div></div>
+          <div class="stat"><div class="n">{{ quick.pleasure_density }}</div><div class="l muted">爽点密度</div></div>
+          <div class="stat"><div class="n">{{ quick.ai_flag_words }}</div><div class="l muted">AI 味词数</div></div>
+          <div class="stat"><div class="n">{{ quick.logic_score ?? '—' }}</div><div class="l muted">逻辑评分</div></div>
+          <div class="stat"><div class="n">{{ quick.ooc_risk }}</div><div class="l muted">OOC 风险</div></div>
+          <div class="stat"><div class="n">{{ quick.paragraphs }}</div><div class="l muted">段落数</div></div>
+        </div>
+        <div v-if="quick.summary" class="summary-box mt-12">{{ quick.summary }}</div>
+        <div v-if="quick.suggestions?.length" class="suggestions-box mt-8">
+          <div class="muted" style="font-size:12px;margin-bottom:4px">AI 建议：</div>
+          <div v-for="(s, i) in quick.suggestions" :key="i" class="suggestion-item">· {{ s }}</div>
         </div>
       </div>
     </div>
@@ -69,4 +82,7 @@ onMounted(async () => {
 .stat { background: var(--surface-2); border-radius: 10px; padding: 14px; text-align: center; }
 .stat .n { font-size: 24px; font-weight: 700; color: var(--primary); }
 .stat .l { margin-top: 4px; }
+.summary-box { background: var(--surface-2); border-left: 3px solid var(--primary); padding: 8px 12px; border-radius: 6px; font-size: 13px; line-height: 1.6; }
+.suggestions-box { background: var(--surface-2); padding: 8px 12px; border-radius: 6px; }
+.suggestion-item { font-size: 13px; line-height: 1.7; color: var(--text); }
 </style>

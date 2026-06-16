@@ -1,7 +1,5 @@
 /** 业务服务层（作品 / 章节 / 设定 / 角色 / 势力 / 物品 / 伏笔 / 大纲 / 提示词 / AI / RAG / 分析 / 设置）*/
 const { getDb } = require('./db/db.js');
-const https = require('https');
-const http = require('http');
 const fs = require('fs');
 const path = require('path');
 
@@ -381,11 +379,12 @@ const promptGroupService = {
   }
 };
 const promptService = {
-  list(projectId) {
+  list(projectId, limit = 200) {
     let sql = 'SELECT p.*, g.name AS group_name FROM prompts p LEFT JOIN prompt_groups g ON g.id = p.group_id WHERE 1=1';
     const params = [];
     if (projectId) { sql += ' AND (p.project_id IS NULL OR p.project_id = ?)'; params.push(projectId); }
     sql += ' ORDER BY p.priority DESC, p.id ASC';
+    sql += ' LIMIT ' + Math.max(1, Math.min(Number(limit) || 200, 1000)); // 上限 1000 条
     return getDb().prepare(sql).all(...params);
   },
   create(data) {
@@ -469,42 +468,106 @@ function buildSystemPrompt(projectId, hint, level) {
   return parts.join('\n\n');
 }
 
-async function chatCompletion(messages, modelOverride) {
-  const m = modelOverride || aiModelService.getDefault();
-  if (!m || !m.api_key) return { text: '【AI 未配置】请在「提示词 / AI 接口」填入 API Key 并设为默认模型。', ok: false };
-  const baseUrl = m.base_url || 'https://api.deepseek.com/chat/completions';
-  return new Promise((resolve) => {
+// ---------- HTTP 工具：fetch + 自动重试 ----------
+const MAX_RETRIES = 3;
+const RETRY_DELAY_BASE = 800; // ms，指数退避
+
+async function fetchWithRetry(url, options, retries = MAX_RETRIES) {
+  let lastError;
+  for (let attempt = 0; attempt <= retries; attempt++) {
     try {
-      const url = new URL(baseUrl);
-      const req = (url.protocol === 'https:' ? https : http).request({
-        hostname: url.hostname,
-        port: url.port || (url.protocol === 'https:' ? 443 : 80),
-        path: url.pathname + url.search,
+      const controller = new AbortController();
+      const timer = setTimeout(() => controller.abort(), 90_000);
+      const resp = await fetch(url, { ...options, signal: controller.signal });
+      clearTimeout(timer);
+      if (!resp.ok && attempt < retries) {
+        // 非 2xx 且还有重试机会，指数退避后重试
+        await new Promise(r => setTimeout(r, RETRY_DELAY_BASE * Math.pow(2, attempt)));
+        continue;
+      }
+      return resp;
+    } catch (e) {
+      lastError = e;
+      if (attempt < retries) {
+        await new Promise(r => setTimeout(r, RETRY_DELAY_BASE * Math.pow(2, attempt)));
+      }
+    }
+  }
+  throw lastError || new Error('fetch exhausted retries');
+}
+
+// ---------- AI 对话（支持流式 / 非流式，自动重试） ----------
+// opts.stream: boolean，是否返回 ReadableStream；opts.timeout: ms
+async function chatCompletion(messages, modelOverride, opts) {
+  opts = opts || {};
+  const m = modelOverride || aiModelService.getDefault();
+  if (!m || !m.api_key) return { text: '【AI 未配置】请在「AI 接口配置」填入 API Key 并设为默认模型。', ok: false };
+
+  const baseUrl = (m.base_url || 'https://api.deepseek.com/v1/chat/completions').replace(/\/$/, '');
+  const endpoint = baseUrl + '/chat/completions';
+  const body = {
+    model: m.model_name || 'deepseek-chat',
+    messages,
+    temperature: Number(m.temperature) || 0.7,
+    max_tokens: Number(m.max_tokens) || 2048
+  };
+
+  // 流式模式：返回 ReadableStream
+  if (opts.stream) {
+    try {
+      const resp = await fetchWithRetry(endpoint, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${m.api_key}`,
-          'Accept': 'application/json'
+          'Accept': 'text/event-stream'
         },
-        timeout: 120_000
-      }, (res) => {
-        let data = '';
-        res.on('data', (c) => data += c);
-        res.on('end', () => {
-          try {
-            const obj = JSON.parse(data);
-            const text = obj.choices?.[0]?.message?.content || obj.choices?.[0]?.text || obj.message?.content || data;
-            resolve({ text, ok: true });
-          } catch (e) { resolve({ text: '【解析失败】' + data, ok: false }); }
-        });
+        body: JSON.stringify({ ...body, stream: true })
       });
-      req.on('error', (e) => resolve({ text: '【网络错误】' + e.message, ok: false }));
-      req.on('timeout', () => { req.destroy(new Error('请求超时')); });
-      const body = JSON.stringify({ model: m.model_name || 'deepseek-chat', messages, temperature: Number(m.temperature) || 0.7, max_tokens: Number(m.max_tokens) || 2048 });
-      req.write(body);
-      req.end();
-    } catch (e) { resolve({ text: '【异常】' + e.message, ok: false }); }
-  });
+      if (!resp.ok) {
+        const err = await resp.text();
+        return { text: `【HTTP ${resp.status}】${err.slice(0, 200)}`, ok: false };
+      }
+      return { stream: resp.body, ok: true };
+    } catch (e) {
+      return { text: '【网络错误】' + e.message, ok: false };
+    }
+  }
+
+  // 非流式模式：完整响应
+  try {
+    const resp = await fetchWithRetry(endpoint, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        'Authorization': `Bearer ${m.api_key}`,
+        'Accept': 'application/json'
+      },
+      body: JSON.stringify(body)
+    });
+    if (!resp.ok) {
+      const err = await resp.text();
+      return { text: `【HTTP ${resp.status}】${err.slice(0, 300)}`, ok: false };
+    }
+    const obj = await resp.json();
+    const text = obj.choices?.[0]?.message?.content
+      || obj.choices?.[0]?.text
+      || obj.message?.content
+      || '';
+    return { text, ok: true };
+  } catch (e) {
+    return { text: '【网络异常】' + e.message, ok: false };
+  }
+}
+
+// ---------- 分析类任务：优先模型 fallback ----------
+async function chatWithFallback(taskMessages, reason, fallbackMessages) {
+  const m = aiModelService.getDefault();
+  const r = await chatCompletion(taskMessages, m);
+  if (r.ok && r.text) return r;
+  // fallback：使用更保守的系统提示，不依赖 RAG
+  if (fallbackMessages) return await chatCompletion(fallbackMessages, m);
+  return r;
 }
 
 async function continueText(projectId, context, hint, level) {
@@ -657,39 +720,107 @@ const ragService = {
   }
 };
 
-// ---------- 追读力分析 ----------
-const HOOK_KEYWORDS = ['突然', '竟然', '原来', '难道', '震惊', '发现', '不料', '心中一', '眉头一', '冷然', '骇然', '居然', '谁知', '蓦然'];
-const PLEASURE_KEYWORDS = ['一掌', '轰', '剑光', '冷笑', '踏破', '威压', '霸气', '傲然', '横扫', '突破', '突破', '秒杀', '一剑', '大笑'];
-function analyzeChapter(text) {
+// ---------- 追读力分析（关键词快扫 + 模型深度分析） ----------
+const HOOK_KEYWORDS = ['突然', '竟然', '原来', '难道', '震惊', '发现', '不料', '心中一', '眉头一', '冷然', '骇然', '居然', '谁知', '蓦然', '只见', '却见', '赫然'];
+const PLEASURE_KEYWORDS = ['一掌', '轰', '剑光', '冷笑', '踏破', '威压', '霸气', '傲然', '横扫', '突破', '秒杀', '一剑', '大笑', '狂笑', '冷哼', '一指点出', '一掌拍出', '身躯一震'];
+const OOC_COMMON = ['突然', '然后', '接着', '于是', '于是乎', '这个时候']; // 去 AI 味标志词
+
+// 关键词快扫（同步，毫秒级返回）
+function fastAnalyze(text) {
   const content = text || '';
-  let hookHits = 0, pleasureHits = 0;
+  let hookHits = 0, pleasureHits = 0, oocFlag = 0;
   for (const k of HOOK_KEYWORDS) hookHits += (content.match(new RegExp(k, 'g')) || []).length;
   for (const k of PLEASURE_KEYWORDS) pleasureHits += (content.match(new RegExp(k, 'g')) || []).length;
-  const sentences = (content.split(/[。！？\.]/).filter(s => s.trim().length > 0)).length;
-  const hookStrength = Math.min(100, hookHits * 7 + (content.includes('？') ? 3 : 0));
-  const oocRisk = content.length > 4000 ? 20 : Math.floor(content.length / 200);
+  for (const k of OOC_COMMON) oocFlag += (content.match(new RegExp(k, 'g')) || []).length;
+  const sentences = Math.max(1, content.split(/[。！？\.]/).filter(s => s.trim().length > 4).length);
+  const paraBreaks = (content.match(/\n\n/g) || []).length + 1;
   return {
     hook_hits: hookHits,
-    hook_strength: hookStrength,
+    hook_strength: Math.min(100, hookHits * 7 + (content.includes('？') ? 3 : 0)),
     pleasure_hits: pleasureHits,
     pleasure_density: Math.min(100, Math.floor((pleasureHits / Math.max(1, sentences / 10)) * 15)),
     sentences,
+    paragraphs: paraBreaks,
     char_count: content.length,
-    ooc_risk: Math.min(60, oocRisk)
+    ai_flag_words: oocFlag,
+    ooc_risk: Math.min(60, oocFlag * 4 + (content.length > 6000 ? 15 : 0))
   };
 }
-function analyzeProject(projectId) {
+
+// 模型深度分析（异步，补充语义层评分）
+async function modelAnalyze(text, projectId) {
+  const chars = projectId
+    ? getDb().prepare('SELECT name, personality FROM characters WHERE project_id = ? LIMIT 5').all(projectId)
+    : [];
+  const charNames = chars.map(c => c.name).join('、');
+  const charDescs = chars.map(c => c.name + '（' + (c.personality || '未知性格') + '）').join('\n');
+
+  const prompt = `你是网文追读力分析师。请分析以下章节片段，给出 JSON 格式的评分（仅输出 JSON，不要其他文字）：
+
+{
+  "hook_score": 0-100,       // 开头钩子强度（0弱-100强）
+  "pleasure_score": 0-100,    // 爽点密度（0低-100高）
+  "ooc_risk": 0-100,          // 人设跑偏风险（0低-100高）
+  "logic_score": 0-100,       // 逻辑连贯性（0差-100优）
+  "summary": "一句话总结该章节的质量与问题",
+  "suggestions": ["建议1", "建议2"]
+}
+
+【主要角色设定】
+${charDescs || '（未设定角色）'}
+
+【待分析正文】
+${(text || '').slice(0, 3000)}`;
+
+  const r = await chatCompletion([
+    { role: 'system', content: '你是一个严格的网文编辑，只输出 JSON，不输出其他内容。' },
+    { role: 'user', content: prompt }
+  ]);
+  if (!r.ok || !r.text) return null;
+  try {
+    const json = JSON.parse(r.text.replace(/^[^{]*/, '').replace(/[^}]*$/, ''));
+    return json;
+  } catch (_) { return null; }
+}
+
+// 章节分析：快扫 → 模型补充 → 合并
+async function analyzeChapter(text, projectId) {
+  const fast = fastAnalyze(text);
+  const deep = await modelAnalyze(text, projectId);
+  return {
+    ...fast,
+    ai_model_analysis: deep || null,
+    hook_strength: deep?.hook_score ?? fast.hook_strength,
+    pleasure_density: deep?.pleasure_score ?? fast.pleasure_density,
+    logic_score: deep?.logic_score ?? null,
+    summary: deep?.summary || null,
+    suggestions: deep?.suggestions || []
+  };
+}
+
+async function analyzeProject(projectId) {
   const totalChapters = getDb().prepare('SELECT COUNT(*) AS c FROM chapters WHERE project_id = ?').get(projectId)?.c || 0;
   const totalWords = getDb().prepare('SELECT COALESCE(SUM(word_count), 0) AS w FROM chapters WHERE project_id = ?').get(projectId)?.w || 0;
   const foresTotal = getDb().prepare('SELECT COUNT(*) AS c FROM foreshadowings WHERE project_id = ?').get(projectId)?.c || 0;
   const foresResolved = getDb().prepare("SELECT COUNT(*) AS c FROM foreshadowings WHERE project_id = ? AND status = 'recovered'").get(projectId)?.c || 0;
   const foresPlanted = getDb().prepare("SELECT COUNT(*) AS c FROM foreshadowings WHERE project_id = ? AND status = 'planted'").get(projectId)?.c || 0;
+
+  // 快扫最近 5 章的平均追读力
+  const recentContent = getDb().prepare(
+    `SELECT cc.content FROM chapters c JOIN chapter_contents cc ON cc.chapter_id = c.id
+     WHERE c.project_id = ? ORDER BY c.id DESC LIMIT 5`
+  ).all(projectId).map(r => r.content).join('\n');
+  const recentFast = fastAnalyze(recentContent);
+
   return {
     total_chapters: totalChapters,
     total_words: totalWords,
     foreshadow_total: foresTotal,
     foreshadow_planted: foresPlanted,
-    foreshadow_resolved: foresResolved
+    foreshadow_resolved: foresResolved,
+    recent_hook_avg: recentFast.hook_strength,
+    recent_pleasure_avg: recentFast.pleasure_density,
+    recent_ooc_risk: recentFast.ooc_risk
   };
 }
 

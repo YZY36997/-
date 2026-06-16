@@ -157,7 +157,7 @@ ipcMain.handle('lingmo:invoke', async (event, action, args) => {
       case 'rag.filterSave': ragService.saveFilter(args.project_id, args.type, args.scope); return ok(true);
 
       // 追读力分析
-      case 'analysis.chapter': return ok(analyzeChapter(args.content || ''));
+      case 'analysis.chapter': return ok(await analyzeChapter(args.content || '', args.project_id));
       case 'analysis.project': return ok(analyzeProject(args.project_id));
 
       // 素材库

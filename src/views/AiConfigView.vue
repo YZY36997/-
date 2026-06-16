@@ -4,7 +4,7 @@ import { ElMessage } from 'element-plus'
 import { lingmo } from '@/api/lingmo'
 
 const models = ref<any[]>([])
-const form = ref<any>({ name: 'DeepSeek', provider: 'deepseek', api_url: 'https://api.deepseek.com/v1/chat/completions', api_key: '', model: 'deepseek-chat', temperature: 0.7, max_tokens: 2048, is_default: 0 })
+const form = ref<any>({ id: null, name: 'DeepSeek', provider: 'deepseek', base_url: 'https://api.deepseek.com/v1/chat/completions', api_key: '', model_name: 'deepseek-chat', temperature: 0.7, max_tokens: 2048, is_default: 0 })
 
 async function load() {
   const r = await lingmo.invoke(lingmo.ACTIONS.AI_MODEL_LIST)
@@ -46,9 +46,9 @@ onMounted(load)
               <el-option label="Ollama" value="ollama" />
             </el-select>
           </el-form-item>
-          <el-form-item label="API URL"><el-input v-model="form.api_url" /></el-form-item>
+          <el-form-item label="API URL"><el-input v-model="form.base_url" /></el-form-item>
           <el-form-item label="API Key"><el-input v-model="form.api_key" show-password /></el-form-item>
-          <el-form-item label="模型"><el-input v-model="form.model" /></el-form-item>
+          <el-form-item label="模型"><el-input v-model="form.model_name" /></el-form-item>
           <el-form-item label="温度"><el-input-number v-model="form.temperature" :min="0" :max="2" :step="0.1" /></el-form-item>
           <el-form-item label="最大 token"><el-input-number v-model="form.max_tokens" :min="256" :max="32768" :step="256" /></el-form-item>
           <el-form-item label="设为默认"><el-switch v-model="form.is_default" :active-value="1" :inactive-value="0" /></el-form-item>

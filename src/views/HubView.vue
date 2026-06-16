@@ -63,8 +63,9 @@ async function deleteArtifact(a: any) {
 
 function newForeshadow() { foreshadows.value.push({ id: null, title: '新伏笔', content: '', status: 'todo', priority: 2 }); }
 async function saveForeshadow(f: any) {
-  const r = await lingmo.invoke(lingmo.ACTIONS.FORESHADOW_SAVE, { project_id: ui.currentProjectId, ...f });
-  if (r.ok && r.data) { Object.assign(f, r.data); ElMessage.success('已保存'); }
+  const action = f.id ? lingmo.ACTIONS.FORESHADOW_UPDATE : lingmo.ACTIONS.FORESHADOW_CREATE;
+  const r = await lingmo.invoke(action, { project_id: ui.currentProjectId, ...f });
+  if (r.ok && r.data) { if (!f.id) f.id = r.data.id; ElMessage.success('已保存'); }
 }
 async function deleteForeshadow(f: any) {
   if (!f.id) { foreshadows.value = foreshadows.value.filter((x: any) => x !== f); return; }

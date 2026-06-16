@@ -34,8 +34,8 @@ async function load() {
     const angle = (i / total) * Math.PI * 2;
     return {
       id: c.id, name: c.name || '角色', role: c.role,
-      x: c.x ?? (cx + Math.cos(angle) * radius),
-      y: c.y ?? (cy + Math.sin(angle) * radius)
+      x: (typeof c.pos_x === 'number') ? c.pos_x : (cx + Math.cos(angle) * radius),
+      y: (typeof c.pos_y === 'number') ? c.pos_y : (cy + Math.sin(angle) * radius)
     };
   });
   relations.value = r2.ok ? (r2.data || []) : [];
@@ -73,6 +73,12 @@ function onMouseMove(e: MouseEvent) {
 }
 
 function onMouseUp() {
+  if (dragging.id !== null) {
+    const c = characters.value.find((cc: any) => cc.id === dragging.id);
+    if (c && typeof c.x === 'number' && typeof c.y === 'number') {
+      lingmo.invoke(lingmo.ACTIONS.CHARACTER_UPDATE, { id: c.id, name: c.name, pos_x: c.x, pos_y: c.y });
+    }
+  }
   dragging.id = null;
   panning.on = false;
 }

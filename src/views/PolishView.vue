@@ -17,7 +17,7 @@ onMounted(() => { projectId.value = ui.currentProjectId; });
 async function runPolish() {
   if (!source.value.trim()) { ElMessage.warning('请先填写原文'); return; }
   busy.value = true;
-  const r = await lingmo.invoke(lingmo.ACTIONS.AI_POLISH, { project_id: projectId.value, text: source.value, template: template.value });
+  const r = await lingmo.invoke(lingmo.ACTIONS.AI_POLISH, { project_id: projectId.value, text: source.value, template: template.value, level: ui.ragLevel || 2 });
   if (r.ok && r.data) {
     polished.value = typeof r.data === 'string' ? r.data : r.data.text || JSON.stringify(r.data);
   } else {

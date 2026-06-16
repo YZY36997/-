@@ -194,12 +194,12 @@ const characterService = {
   create(projectId, data) {
     const info = getDb().prepare(
       `INSERT INTO characters (project_id, name, role, appearance, personality, background,
-        abilities, weakness, first_chapter, current_status, pos_x, pos_y)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
+        abilities, weakness, first_chapter, current_status, relationships, pos_x, pos_y)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`
     ).run(
       projectId, data.name || '新角色', data.role || 'supporting', data.appearance || '',
       data.personality || '', data.background || '', data.abilities || '', data.weakness || '',
-      data.first_chapter || '', data.current_status || '',
+      data.first_chapter || '', data.current_status || '', data.relationships || '',
       typeof data.pos_x === 'number' ? data.pos_x : Math.random() * 300,
       typeof data.pos_y === 'number' ? data.pos_y : Math.random() * 300
     );
@@ -208,12 +208,12 @@ const characterService = {
   update(id, data) {
     getDb().prepare(
       `UPDATE characters SET name = ?, role = ?, appearance = ?, personality = ?, background = ?,
-        abilities = ?, weakness = ?, first_chapter = ?, current_status = ?, pos_x = ?, pos_y = ?,
-        updated_at = CURRENT_TIMESTAMP WHERE id = ?`
+        abilities = ?, weakness = ?, first_chapter = ?, current_status = ?, relationships = ?,
+        pos_x = ?, pos_y = ?, updated_at = CURRENT_TIMESTAMP WHERE id = ?`
     ).run(
       data.name, data.role || 'supporting', data.appearance || '', data.personality || '',
       data.background || '', data.abilities || '', data.weakness || '', data.first_chapter || '',
-      data.current_status || '',
+      data.current_status || '', data.relationships || '',
       typeof data.pos_x === 'number' ? data.pos_x : 0, typeof data.pos_y === 'number' ? data.pos_y : 0, id
     );
   },
@@ -296,16 +296,17 @@ const foreshadowService = {
 const outlineService = {
   tree(projectId) { return getDb().prepare('SELECT * FROM outlines WHERE project_id = ? ORDER BY sort_order ASC, id ASC').all(projectId); },
   save(projectId, data) {
+    const goal = data.goal || data.core_goal || '';
     const info = getDb().prepare(
-      `INSERT INTO outlines (id, project_id, parent_id, level, title, goal, plot, pleasure, foreshadow, mood, body, sort_order)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `INSERT INTO outlines (id, project_id, parent_id, level, title, goal, summary, plot, pleasure, foreshadow, mood, body, sort_order)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
        ON CONFLICT(id) DO UPDATE SET
          parent_id = excluded.parent_id, level = excluded.level, title = excluded.title, goal = excluded.goal,
-         plot = excluded.plot, pleasure = excluded.pleasure, foreshadow = excluded.foreshadow, mood = excluded.mood,
-         body = excluded.body, sort_order = excluded.sort_order`
+         summary = excluded.summary, plot = excluded.plot, pleasure = excluded.pleasure, foreshadow = excluded.foreshadow,
+         mood = excluded.mood, body = excluded.body, sort_order = excluded.sort_order`
     ).run(
       data.id || null, projectId, data.parent_id || null, data.level || 2, data.title || '',
-      data.goal || '', data.plot || '', data.pleasure || '', data.foreshadow || '',
+      goal, data.summary || '', data.plot || '', data.pleasure || '', data.foreshadow || '',
       data.mood || '', data.body || '', data.sort_order || 0
     );
     return { id: data.id || info.lastInsertRowid };

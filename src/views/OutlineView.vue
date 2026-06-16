@@ -18,7 +18,7 @@ async function load() {
 
 function addNode(parent: any | null) {
   const parentId = parent ? (parent.parent_id ? `${parent.parent_id}-${parent.id}` : parent.id) : null;
-  editing.value = { id: null, parent_id: parentId, title: '新节点', summary: '', core_goal: '', plot: '', pleasure: '', foreshadow: '', mood: '', body: '', sort_order: 0 };
+  editing.value = { id: null, parent_id: parentId, title: '新节点', summary: '', goal: '', plot: '', pleasure: '', foreshadow: '', mood: '', body: '', sort_order: 0 };
 }
 
 async function saveNode() {
@@ -71,8 +71,8 @@ onMounted(load);
             <el-button size="small" type="danger" @click="removeNode(o.id)">删除</el-button>
           </div>
         </div>
-        <div class="node-body" v-if="o.core_goal || o.summary || o.plot || o.mood || o.foreshadow">
-          <div v-if="o.core_goal"><span class="tag">核心目标</span>{{ o.core_goal }}</div>
+        <div class="node-body" v-if="o.goal || o.summary || o.plot || o.mood || o.foreshadow">
+          <div v-if="o.goal"><span class="tag">核心目标</span>{{ o.goal }}</div>
           <div v-if="o.summary"><span class="tag">章节摘要</span>{{ o.summary }}</div>
           <div v-if="o.plot"><span class="tag">剧情走向</span>{{ o.plot }}</div>
           <div v-if="o.pleasure"><span class="tag">爽点设计</span>{{ o.pleasure }}</div>
@@ -86,7 +86,7 @@ onMounted(load);
       <template v-if="editing">
         <div class="dlg-form">
           <div class="field"><label>标题</label><el-input v-model="editing.title"/></div>
-          <div class="field"><label>核心目标</label><el-input v-model="editing.core_goal" type="textarea" :rows="2"/></div>
+          <div class="field"><label>核心目标</label><el-input v-model="editing.goal" type="textarea" :rows="2"/></div>
           <div class="field"><label>章节摘要</label><el-input v-model="editing.summary" type="textarea" :rows="2"/></div>
           <div class="field"><label>剧情走向</label><el-input v-model="editing.plot" type="textarea" :rows="2"/></div>
           <div class="field"><label>爽点设计</label><el-input v-model="editing.pleasure" type="textarea" :rows="2"/></div>

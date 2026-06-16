@@ -135,6 +135,7 @@ CREATE TABLE IF NOT EXISTS characters (
     weakness     TEXT,                         -- 弱点
     first_chapter TEXT,                        -- 首次登场章节
     current_status TEXT,                       -- 当前剧情状态
+    relationships  TEXT,                       -- 人际关系简述
     extra        TEXT,                         -- JSON 扩展字段
     pos_x        REAL DEFAULT 0,               -- 图谱画布坐标
     pos_y        REAL DEFAULT 0,
@@ -226,6 +227,7 @@ CREATE TABLE IF NOT EXISTS outlines (
     title       TEXT NOT NULL,
     level       INTEGER DEFAULT 0,             -- 0 项目 / 1 卷 / 2 大章 / 3 小节
     goal        TEXT,                          -- 章节核心目标
+    summary     TEXT,                          -- 章节摘要
     plot        TEXT,                          -- 剧情走向
     pleasure    TEXT,                          -- 爽点设计
     foreshadow  TEXT,                          -- 预埋伏笔

@@ -17,12 +17,14 @@ export const ACTIONS = {
 
   PROJECT_LIST: 'project.list',
   PROJECT_RECYCLE: 'project.recycle',
+  PROJECT_RECYCLE_LIST: 'project.recycleList',
   PROJECT_GET: 'project.get',
   PROJECT_CREATE: 'project.create',
   PROJECT_UPDATE: 'project.update',
   PROJECT_DELETE: 'project.delete',
   PROJECT_RESTORE: 'project.restore',
   PROJECT_EXPORT: 'project.export',
+  PROJECT_EXPORT_JSON: 'project.exportJson',
 
   PROJECT_SETTINGS_GET: 'projectSettings.get',
   PROJECT_SETTINGS_SAVE: 'projectSettings.save',

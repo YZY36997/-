@@ -6,7 +6,7 @@ import { lingmo } from '@/api/lingmo'
 const groups = ref<any[]>([])
 const prompts = ref<any[]>([])
 const groupForm = ref<any>({ name: '', description: '' })
-const promptForm = ref<any>({ group_id: 0, title: '', content: '', enabled: 1 })
+const promptForm = ref<any>({ group_id: 0, name: '', content: '', enabled: 1, priority: 1 })
 
 async function load() {
   const [r1, r2] = await Promise.all([
@@ -27,9 +27,9 @@ async function removeGroup(id: number) {
 }
 
 async function addPrompt() {
-  if (!promptForm.value.title) return
+  if (!promptForm.value.name) return
   const r = await lingmo.invoke(lingmo.ACTIONS.PROMPT_CREATE, promptForm.value)
-  if (r.ok) { promptForm.value = { group_id: (groups.value[0]?.id) || 0, title: '', content: '', enabled: 1 }; load() }
+  if (r.ok) { promptForm.value = { group_id: (groups.value[0]?.id) || 0, name: '', content: '', enabled: 1, priority: 1 }; load() }
 }
 async function removePrompt(id: number) {
   await lingmo.invoke(lingmo.ACTIONS.PROMPT_DELETE, { id }); load()
@@ -60,7 +60,7 @@ onMounted(() => { if (groups.value.length) promptForm.value.group_id = groups.va
               <el-option v-for="g in groups" :key="g.id" :label="g.name" :value="g.id" />
             </el-select>
           </el-form-item>
-          <el-form-item label="标题"><el-input v-model="promptForm.title" style="max-width:400px" /></el-form-item>
+          <el-form-item label="标题"><el-input v-model="promptForm.name" style="max-width:400px" /></el-form-item>
           <el-form-item label="内容"><el-input v-model="promptForm.content" type="textarea" :rows="4" /></el-form-item>
         </el-form>
         <el-button type="primary" @click="addPrompt">添加提示词</el-button>
@@ -77,7 +77,7 @@ onMounted(() => { if (groups.value.length) promptForm.value.group_id = groups.va
         <b>提示词列表（{{ prompts.length }}）</b>
         <el-table :data="prompts" class="mt-12">
           <el-table-column label="分组" width="140"><template #default="{row}">{{ groupName(row.group_id) }}</template></el-table-column>
-          <el-table-column prop="title" label="标题" width="200" />
+          <el-table-column prop="name" label="标题" width="200" />
           <el-table-column prop="content" label="内容" />
           <el-table-column label="操作" width="120"><template #default="{row}"><el-button size="small" type="danger" @click="removePrompt(row.id)">删除</el-button></template></el-table-column>
         </el-table>

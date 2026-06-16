@@ -45,7 +45,7 @@ async function load() {
   loading.value = false;
 }
 async function loadRecycle() {
-  const r = await lingmo.invoke('project.recycleList');
+  const r = await lingmo.invoke(lingmo.ACTIONS.PROJECT_RECYCLE_LIST);
   recycleBin.value = r.ok && Array.isArray(r.data) ? r.data : [];
 }
 
@@ -85,7 +85,7 @@ async function rename(p: any) {
 }
 
 async function exportProject(p: any) {
-  const r = await lingmo.invoke('project.exportJson', { id: p.id });
+  const r = await lingmo.invoke(lingmo.ACTIONS.PROJECT_EXPORT_JSON, { id: p.id });
   if (r.ok && r.data) {
     try {
       const blob = new Blob([JSON.stringify(r.data, null, 2)], { type: 'application/json' });

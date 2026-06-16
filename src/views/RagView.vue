@@ -35,7 +35,7 @@ async function retrieve() {
 }
 
 async function buildSystem() {
-  const r = await lingmo.invoke('rag.buildSystemPrompt', { project_id: projectId.value, hint: query.value, level: mode.value === 'l1' ? 1 : mode.value === 'l2' ? 2 : 3 })
+  const r = await lingmo.invoke(lingmo.ACTIONS.AI_BUILD_SYSTEM_PROMPT, { project_id: projectId.value, hint: query.value, level: mode.value === 'l1' ? 1 : mode.value === 'l2' ? 2 : 3 })
   built.value = r.ok && r.data ? (r.data.text || JSON.stringify(r.data)) : ''
 }
 

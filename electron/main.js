@@ -65,12 +65,14 @@ ipcMain.handle('lingmo:invoke', async (event, action, args) => {
       // 作品
       case 'project.list': return ok(projectService.list(args.genre, args.keyword, args.sortBy));
       case 'project.recycle': return ok(projectService.listRecycle());
+      case 'project.recycleList': return ok(projectService.listRecycle());
       case 'project.get': return ok(projectService.get(args.id));
       case 'project.create': return ok(projectService.create(args));
       case 'project.update': projectService.update(args.id, args); return ok(true);
       case 'project.delete': projectService.softDelete(args.id); return ok(true);
       case 'project.restore': projectService.restore(args.id); return ok(true);
       case 'project.export': return ok(projectService.exportJson(args.id));
+      case 'project.exportJson': return ok(projectService.exportJson(args.id));
 
       // 设定
       case 'projectSettings.get': return ok(projectSettingsService.get(args.project_id));
@@ -121,10 +123,6 @@ ipcMain.handle('lingmo:invoke', async (event, action, args) => {
       case 'outline.tree': return ok(outlineService.tree(args.project_id));
       case 'outline.save': return ok(outlineService.save(args.project_id, args));
       case 'outline.delete': outlineService.remove(args.id); return ok(true);
-      case 'project.recycleList': return ok(projectService.listRecycle());
-      case 'project.restore': projectService.restore(args.id); return ok(true);
-      case 'project.exportJson': return ok(projectService.exportJson(args.id));
-      case 'settings.getAll': return ok({ theme: getSetting('theme') || 'dark' });
 
       // 提示词
       case 'promptGroup.list': return ok(promptGroupService.list());
